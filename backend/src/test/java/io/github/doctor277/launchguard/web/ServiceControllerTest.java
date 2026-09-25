@@ -2,6 +2,7 @@ package io.github.doctor277.launchguard.web;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -11,7 +12,10 @@ import io.github.doctor277.launchguard.domain.ServiceStatus;
 import io.github.doctor277.launchguard.dto.CreateServiceRequest;
 import io.github.doctor277.launchguard.dto.ServiceResponse;
 import io.github.doctor277.launchguard.service.HealthCheckService;
+import io.github.doctor277.launchguard.service.MetricsWindow;
 import io.github.doctor277.launchguard.service.ServiceManager;
+import io.github.doctor277.launchguard.service.ServiceMetricsService;
+import io.github.doctor277.launchguard.service.ServiceNotFoundException;
 import java.time.Instant;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -33,6 +37,9 @@ class ServiceControllerTest {
     @Mock
     private HealthCheckService healthCheckService;
 
+    @Mock
+    private ServiceMetricsService metricsService;
+
     private MockMvc mockMvc;
 
     @BeforeEach
@@ -40,7 +47,7 @@ class ServiceControllerTest {
         LocalValidatorFactoryBean validator = new LocalValidatorFactoryBean();
         validator.afterPropertiesSet();
         mockMvc = MockMvcBuilders
-                .standaloneSetup(new ServiceController(serviceManager, healthCheckService))
+                .standaloneSetup(new ServiceController(serviceManager, healthCheckService, metricsService))
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .setValidator(validator)
                 .build();
@@ -83,5 +90,28 @@ class ServiceControllerTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").value("Request validation failed"))
                 .andExpect(jsonPath("$.violations.length()").value(3));
+    }
+
+    @Test
+    void rejectsInvalidMetricsWindowWithStructuredError() throws Exception {
+        UUID id = UUID.randomUUID();
+
+        mockMvc.perform(get("/api/services/{id}/metrics", id).param("window", "yesterday"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value(400))
+                .andExpect(jsonPath("$.message")
+                        .value("Invalid metrics window 'yesterday'. Supported values: 1h, 24h, 7d, 30d, all"));
+    }
+
+    @Test
+    void returnsNotFoundForMetricsOfMissingService() throws Exception {
+        UUID id = UUID.randomUUID();
+        when(metricsService.getMetrics(id, MetricsWindow.TWENTY_FOUR_HOURS))
+                .thenThrow(new ServiceNotFoundException(id));
+
+        mockMvc.perform(get("/api/services/{id}/metrics", id))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.status").value(404))
+                .andExpect(jsonPath("$.message").value("Monitored service not found: " + id));
     }
 }

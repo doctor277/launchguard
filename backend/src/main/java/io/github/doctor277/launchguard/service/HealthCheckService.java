@@ -3,19 +3,24 @@ package io.github.doctor277.launchguard.service;
 import io.github.doctor277.launchguard.domain.HealthCheck;
 import io.github.doctor277.launchguard.domain.MonitoredService;
 import io.github.doctor277.launchguard.dto.HealthCheckResponse;
+import io.github.doctor277.launchguard.dto.PageResponse;
 import io.github.doctor277.launchguard.repository.HealthCheckRepository;
 import io.github.doctor277.launchguard.repository.MonitoredServiceRepository;
 import java.time.Clock;
 import java.time.Instant;
-import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class HealthCheckService {
+
+    static final int MAX_PAGE_SIZE = 100;
 
     private final MonitoredServiceRepository serviceRepository;
     private final HealthCheckRepository healthCheckRepository;
@@ -57,12 +62,24 @@ public class HealthCheckService {
     }
 
     @Transactional(readOnly = true)
-    public List<HealthCheckResponse> findHistory(UUID serviceId) {
+    public PageResponse<HealthCheckResponse> findHistory(UUID serviceId, int page, int size) {
+        validatePagination(page, size);
         if (!serviceRepository.existsById(serviceId)) {
             throw new ServiceNotFoundException(serviceId);
         }
-        return healthCheckRepository.findAllByServiceIdOrderByCheckedAtDesc(serviceId).stream()
-                .map(HealthCheckResponse::from)
-                .toList();
+        PageRequest pageRequest = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "checkedAt"));
+        Page<HealthCheckResponse> history = healthCheckRepository.findAllByServiceId(serviceId, pageRequest)
+                .map(HealthCheckResponse::from);
+        return new PageResponse<>(history.getContent(), history.getNumber(), history.getSize(),
+                history.getTotalElements(), history.getTotalPages(), history.isFirst(), history.isLast());
+    }
+
+    private static void validatePagination(int page, int size) {
+        if (page < 0) {
+            throw new IllegalArgumentException("page must be greater than or equal to 0");
+        }
+        if (size < 1 || size > MAX_PAGE_SIZE) {
+            throw new IllegalArgumentException("size must be between 1 and " + MAX_PAGE_SIZE);
+        }
     }
 }

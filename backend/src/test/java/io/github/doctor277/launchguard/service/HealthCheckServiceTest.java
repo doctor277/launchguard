@@ -1,8 +1,10 @@
 package io.github.doctor277.launchguard.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import io.github.doctor277.launchguard.domain.HealthCheck;
@@ -13,6 +15,7 @@ import io.github.doctor277.launchguard.repository.MonitoredServiceRepository;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -20,6 +23,9 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 
 @ExtendWith(MockitoExtension.class)
 class HealthCheckServiceTest {
@@ -41,15 +47,13 @@ class HealthCheckServiceTest {
     @BeforeEach
     void setUp() {
         service = MonitoredService.register("payment-service", "http://localhost:8081", "/health");
-        when(serviceRepository.findById(service.getId())).thenReturn(Optional.of(service));
-        when(healthCheckRepository.save(any(HealthCheck.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0));
         healthCheckService = new HealthCheckService(serviceRepository, healthCheckRepository, healthProbe,
                 Clock.fixed(CHECKED_AT, ZoneOffset.UTC));
     }
 
     @Test
     void transitionsUnknownToHealthyAndPersistsCheck() {
+        prepareCheck();
         when(healthProbe.probe(service)).thenReturn(new ProbeResult(ServiceStatus.HEALTHY, 200, 12, null));
 
         var response = healthCheckService.check(service.getId());
@@ -67,6 +71,7 @@ class HealthCheckServiceTest {
 
     @Test
     void transitionsHealthyToDown() {
+        prepareCheck();
         service.recordStatus(ServiceStatus.HEALTHY, CHECKED_AT.minusSeconds(30));
         when(healthProbe.probe(service))
                 .thenReturn(new ProbeResult(ServiceStatus.DOWN, 500, 8, "HTTP request returned status 500"));
@@ -76,5 +81,42 @@ class HealthCheckServiceTest {
         assertThat(service.getStatus()).isEqualTo(ServiceStatus.DOWN);
         assertThat(response.status()).isEqualTo(ServiceStatus.DOWN);
         assertThat(response.errorMessage()).contains("500");
+    }
+
+    @Test
+    void returnsPaginatedHistoryNewestFirst() {
+        HealthCheck check = HealthCheck.record(service, ServiceStatus.HEALTHY, 200, 14, null, CHECKED_AT);
+        PageRequest expectedPage = PageRequest.of(1, 2, Sort.by(Sort.Direction.DESC, "checkedAt"));
+        when(serviceRepository.existsById(service.getId())).thenReturn(true);
+        when(healthCheckRepository.findAllByServiceId(service.getId(), expectedPage))
+                .thenReturn(new PageImpl<>(List.of(check), expectedPage, 5));
+
+        var response = healthCheckService.findHistory(service.getId(), 1, 2);
+
+        assertThat(response.content()).singleElement().satisfies(item -> {
+            assertThat(item.status()).isEqualTo(ServiceStatus.HEALTHY);
+            assertThat(item.responseTimeMs()).isEqualTo(14);
+        });
+        assertThat(response.page()).isEqualTo(1);
+        assertThat(response.size()).isEqualTo(2);
+        assertThat(response.totalElements()).isEqualTo(5);
+        assertThat(response.totalPages()).isEqualTo(3);
+        assertThat(response.first()).isFalse();
+        assertThat(response.last()).isFalse();
+    }
+
+    @Test
+    void rejectsPageSizeAboveMaximum() {
+        assertThatThrownBy(() -> healthCheckService.findHistory(service.getId(), 0, 101))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("size must be between 1 and 100");
+
+        verifyNoInteractions(healthCheckRepository);
+    }
+
+    private void prepareCheck() {
+        when(serviceRepository.findById(service.getId())).thenReturn(Optional.of(service));
+        when(healthCheckRepository.save(any(HealthCheck.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
     }
 }
