@@ -1,0 +1,15 @@
+target/
+**/target/
+.idea/
+.vscode/
+*.iml
+*.log
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
+hs_err_pid*
+replay_pid*
+.tools/
+.maven-home/

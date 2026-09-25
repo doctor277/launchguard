@@ -1,0 +1,43 @@
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: launchguard
+      POSTGRES_USER: launchguard
+      POSTGRES_PASSWORD: launchguard
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - launchguard-postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U launchguard -d launchguard"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/launchguard
+      DB_USERNAME: launchguard
+      DB_PASSWORD: launchguard
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  payment-service:
+    build:
+      context: .
+      dockerfile: demo-services/payment-service/Dockerfile
+    ports:
+      - "8081:8081"
+    restart: unless-stopped
+
+volumes:
+  launchguard-postgres-data:
