@@ -2,6 +2,7 @@ package io.github.doctor277.launchguard.web;
 
 import io.github.doctor277.launchguard.service.CheckAlreadyInProgressException;
 import io.github.doctor277.launchguard.service.DuplicateServiceNameException;
+import io.github.doctor277.launchguard.service.DeploymentNotFoundException;
 import io.github.doctor277.launchguard.service.ServiceNotFoundException;
 import jakarta.servlet.http.HttpServletRequest;
 import java.time.Instant;
@@ -21,8 +22,8 @@ public class GlobalExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
-    @ExceptionHandler(ServiceNotFoundException.class)
-    ResponseEntity<ApiError> handleNotFound(ServiceNotFoundException exception, HttpServletRequest request) {
+    @ExceptionHandler({ServiceNotFoundException.class, DeploymentNotFoundException.class})
+    ResponseEntity<ApiError> handleNotFound(RuntimeException exception, HttpServletRequest request) {
         return error(HttpStatus.NOT_FOUND, exception.getMessage(), request, List.of());
     }
 

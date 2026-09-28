@@ -25,6 +25,11 @@ public class HealthCheck {
             foreignKey = @ForeignKey(name = "fk_health_checks_service"))
     private MonitoredService service;
 
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "deployment_id", updatable = false,
+            foreignKey = @ForeignKey(name = "fk_health_checks_deployment"))
+    private Deployment deployment;
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 16)
     private ServiceStatus status;
@@ -44,10 +49,11 @@ public class HealthCheck {
     protected HealthCheck() {
     }
 
-    private HealthCheck(UUID id, MonitoredService service, ServiceStatus status, Integer httpStatus,
+    private HealthCheck(UUID id, MonitoredService service, Deployment deployment, ServiceStatus status, Integer httpStatus,
                         long responseTimeMs, String errorMessage, Instant checkedAt) {
         this.id = id;
         this.service = service;
+        this.deployment = deployment;
         this.status = status;
         this.httpStatus = httpStatus;
         this.responseTimeMs = responseTimeMs;
@@ -57,7 +63,15 @@ public class HealthCheck {
 
     public static HealthCheck record(MonitoredService service, ServiceStatus status, Integer httpStatus,
                                      long responseTimeMs, String errorMessage, Instant checkedAt) {
-        return new HealthCheck(UUID.randomUUID(), service, status, httpStatus,
+        return record(service, null, status, httpStatus, responseTimeMs, errorMessage, checkedAt);
+    }
+
+    public static HealthCheck record(MonitoredService service, Deployment deployment, ServiceStatus status,
+                                     Integer httpStatus, long responseTimeMs, String errorMessage, Instant checkedAt) {
+        if (deployment != null && !service.getId().equals(deployment.getService().getId())) {
+            throw new IllegalArgumentException("Deployment belongs to another service");
+        }
+        return new HealthCheck(UUID.randomUUID(), service, deployment, status, httpStatus,
                 responseTimeMs, errorMessage, checkedAt);
     }
 
@@ -67,6 +81,10 @@ public class HealthCheck {
 
     public MonitoredService getService() {
         return service;
+    }
+
+    public Deployment getDeployment() {
+        return deployment;
     }
 
     public ServiceStatus getStatus() {

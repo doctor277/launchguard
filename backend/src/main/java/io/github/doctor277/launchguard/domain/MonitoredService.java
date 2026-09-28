@@ -5,13 +5,19 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
+import jakarta.persistence.FetchType;
+import jakarta.persistence.ForeignKey;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
 import java.time.Instant;
 import java.util.UUID;
+import org.hibernate.annotations.DynamicUpdate;
 
 @Entity
+@DynamicUpdate
 @Table(name = "monitored_services")
 public class MonitoredService {
 
@@ -33,6 +39,11 @@ public class MonitoredService {
 
     @Column(name = "last_checked_at")
     private Instant lastCheckedAt;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "current_deployment_id",
+            foreignKey = @ForeignKey(name = "fk_monitored_services_current_deployment"))
+    private Deployment currentDeployment;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
@@ -58,6 +69,13 @@ public class MonitoredService {
     public void recordStatus(ServiceStatus newStatus, Instant checkedAt) {
         status = newStatus;
         lastCheckedAt = checkedAt;
+    }
+
+    public void setCurrentDeployment(Deployment deployment) {
+        if (!id.equals(deployment.getService().getId())) {
+            throw new IllegalArgumentException("Deployment belongs to another service");
+        }
+        currentDeployment = deployment;
     }
 
     @PrePersist
@@ -94,6 +112,10 @@ public class MonitoredService {
 
     public Instant getLastCheckedAt() {
         return lastCheckedAt;
+    }
+
+    public Deployment getCurrentDeployment() {
+        return currentDeployment;
     }
 
     public Instant getCreatedAt() {

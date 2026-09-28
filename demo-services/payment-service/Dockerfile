@@ -12,6 +12,6 @@ FROM eclipse-temurin:25-jre-alpine
 WORKDIR /app
 RUN addgroup -S payment && adduser -S payment -G payment
 USER payment
-COPY --from=build /workspace/demo-services/payment-service/target/payment-service-0.2.0-SNAPSHOT.jar app.jar
+COPY --from=build /workspace/demo-services/payment-service/target/payment-service-0.3.0-SNAPSHOT.jar app.jar
 EXPOSE 8081
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]

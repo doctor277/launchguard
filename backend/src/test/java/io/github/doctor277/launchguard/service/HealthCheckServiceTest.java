@@ -8,6 +8,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import io.github.doctor277.launchguard.domain.HealthCheck;
+import io.github.doctor277.launchguard.domain.Deployment;
 import io.github.doctor277.launchguard.domain.MonitoredService;
 import io.github.doctor277.launchguard.domain.ServiceStatus;
 import io.github.doctor277.launchguard.repository.HealthCheckRepository;
@@ -61,6 +62,7 @@ class HealthCheckServiceTest {
         assertThat(service.getStatus()).isEqualTo(ServiceStatus.HEALTHY);
         assertThat(service.getLastCheckedAt()).isEqualTo(CHECKED_AT);
         assertThat(response.status()).isEqualTo(ServiceStatus.HEALTHY);
+        assertThat(response.deploymentId()).isNull();
         assertThat(response.httpStatus()).isEqualTo(200);
         ArgumentCaptor<HealthCheck> captor = ArgumentCaptor.forClass(HealthCheck.class);
         verify(healthCheckRepository).save(captor.capture());
@@ -81,6 +83,40 @@ class HealthCheckServiceTest {
         assertThat(service.getStatus()).isEqualTo(ServiceStatus.DOWN);
         assertThat(response.status()).isEqualTo(ServiceStatus.DOWN);
         assertThat(response.errorMessage()).contains("500");
+    }
+
+    @Test
+    void linksCheckToCurrentDeployment() {
+        prepareCheck();
+        Deployment deployment = Deployment.register(service, "v1.0.0", null, null, CHECKED_AT);
+        service.setCurrentDeployment(deployment);
+        when(healthProbe.probe(service)).thenReturn(new ProbeResult(ServiceStatus.HEALTHY, 200, 12, null));
+
+        var response = healthCheckService.check(service.getId());
+
+        ArgumentCaptor<HealthCheck> captor = ArgumentCaptor.forClass(HealthCheck.class);
+        verify(healthCheckRepository).save(captor.capture());
+        assertThat(captor.getValue().getDeployment()).isSameAs(deployment);
+        assertThat(response.deploymentId()).isEqualTo(deployment.getId());
+    }
+
+    @Test
+    void leavesEarlierCheckLinkedToOriginalDeploymentAfterReplacement() {
+        prepareCheck();
+        Deployment first = Deployment.register(service, "v1.0.0", null, null, CHECKED_AT.minusSeconds(60));
+        service.setCurrentDeployment(first);
+        when(healthProbe.probe(service)).thenReturn(new ProbeResult(ServiceStatus.HEALTHY, 200, 12, null));
+        healthCheckService.check(service.getId());
+        Deployment second = Deployment.register(service, "v1.1.0", null, null, CHECKED_AT);
+        service.setCurrentDeployment(second);
+
+        var secondResponse = healthCheckService.check(service.getId());
+
+        ArgumentCaptor<HealthCheck> captor = ArgumentCaptor.forClass(HealthCheck.class);
+        verify(healthCheckRepository, org.mockito.Mockito.times(2)).save(captor.capture());
+        assertThat(captor.getAllValues().get(0).getDeployment()).isSameAs(first);
+        assertThat(captor.getAllValues().get(1).getDeployment()).isSameAs(second);
+        assertThat(secondResponse.deploymentId()).isEqualTo(second.getId());
     }
 
     @Test

@@ -58,7 +58,7 @@ class ServiceControllerTest {
         UUID id = UUID.randomUUID();
         Instant now = Instant.parse("2026-09-24T12:00:00Z");
         ServiceResponse response = new ServiceResponse(id, "payment-service", "http://localhost:8081",
-                "/health", ServiceStatus.UNKNOWN, null, now, now);
+                "/health", ServiceStatus.UNKNOWN, null, now, now, null);
         when(serviceManager.create(any(CreateServiceRequest.class))).thenReturn(response);
 
         mockMvc.perform(post("/api/services")

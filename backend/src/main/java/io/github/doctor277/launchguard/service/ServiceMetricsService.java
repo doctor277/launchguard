@@ -8,8 +8,6 @@ import io.github.doctor277.launchguard.repository.HealthCheckRepository;
 import io.github.doctor277.launchguard.repository.HealthCheckTimelineView;
 import io.github.doctor277.launchguard.repository.MetricsAggregate;
 import io.github.doctor277.launchguard.repository.MonitoredServiceRepository;
-import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
@@ -19,8 +17,6 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class ServiceMetricsService {
-
-    private static final BigDecimal ONE_HUNDRED = BigDecimal.valueOf(100);
 
     private final MonitoredServiceRepository serviceRepository;
     private final HealthCheckRepository healthCheckRepository;
@@ -48,8 +44,8 @@ public class ServiceMetricsService {
                 aggregate.totalChecks(),
                 aggregate.healthyChecks(),
                 aggregate.failedChecks(),
-                calculateAvailability(aggregate.healthyChecks(), aggregate.totalChecks()),
-                roundLatency(aggregate.averageResponseTimeMs()),
+                MetricsMath.availability(aggregate.healthyChecks(), aggregate.totalChecks()),
+                MetricsMath.roundedLatency(aggregate.averageResponseTimeMs()),
                 aggregate.minResponseTimeMs(),
                 aggregate.maxResponseTimeMs(),
                 aggregate.lastFailureAt(),
@@ -82,20 +78,4 @@ public class ServiceMetricsService {
                 .orElseGet(() -> metricsRepository.summarize(serviceId));
     }
 
-    private static BigDecimal calculateAvailability(long healthyChecks, long totalChecks) {
-        if (totalChecks == 0) {
-            return BigDecimal.ZERO.setScale(2);
-        }
-        return BigDecimal.valueOf(healthyChecks)
-                .multiply(ONE_HUNDRED)
-                .divide(BigDecimal.valueOf(totalChecks), 2, RoundingMode.HALF_UP);
-    }
-
-    private static BigDecimal roundLatency(BigDecimal value) {
-        if (value == null) {
-            return null;
-        }
-        BigDecimal rounded = value.setScale(2, RoundingMode.HALF_UP).stripTrailingZeros();
-        return rounded.scale() < 0 ? rounded.setScale(0) : rounded;
-    }
 }

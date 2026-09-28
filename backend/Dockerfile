@@ -12,6 +12,6 @@ FROM eclipse-temurin:25-jre-alpine
 WORKDIR /app
 RUN addgroup -S launchguard && adduser -S launchguard -G launchguard
 USER launchguard
-COPY --from=build /workspace/backend/target/launchguard-backend-0.2.0-SNAPSHOT.jar app.jar
+COPY --from=build /workspace/backend/target/launchguard-backend-0.3.0-SNAPSHOT.jar app.jar
 EXPOSE 8080
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]

@@ -8,6 +8,7 @@ import java.util.UUID;
 public record HealthCheckResponse(
         UUID id,
         UUID serviceId,
+        UUID deploymentId,
         ServiceStatus status,
         Integer httpStatus,
         long responseTimeMs,
@@ -15,7 +16,9 @@ public record HealthCheckResponse(
         Instant checkedAt) {
 
     public static HealthCheckResponse from(HealthCheck check) {
-        return new HealthCheckResponse(check.getId(), check.getService().getId(), check.getStatus(),
+        var deployment = check.getDeployment();
+        return new HealthCheckResponse(check.getId(), check.getService().getId(),
+                deployment == null ? null : deployment.getId(), check.getStatus(),
                 check.getHttpStatus(), check.getResponseTimeMs(), check.getErrorMessage(), check.getCheckedAt());
     }
 }
