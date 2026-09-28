@@ -51,7 +51,8 @@ try {
 } finally { Pop-Location }
 $externalId = if ($env:GITHUB_RUN_ID) { "github-$env:GITHUB_REPOSITORY_ID-$env:GITHUB_RUN_ID-local" }
     else { "local-$([guid]::NewGuid())" }
-$reportArgs = @{ LaunchGuardUrl=$BackendUrl; ServiceId=$serviceId; Version='0.7.0-SNAPSHOT'; CommitSha=$sha
+$projectVersion = ([xml](Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'pom.xml'))).project.version
+$reportArgs = @{ LaunchGuardUrl=$BackendUrl; ServiceId=$serviceId; Version=$projectVersion; CommitSha=$sha
     Environment='local'; ImageTag="sha-$sha"; ExternalId=$externalId; Description='V0.7 delivery demonstration' }
 try {
     Invoke-RestMethod -Method Post -Uri "$PaymentUrl/admin/normal" -TimeoutSec 15 | Out-Null

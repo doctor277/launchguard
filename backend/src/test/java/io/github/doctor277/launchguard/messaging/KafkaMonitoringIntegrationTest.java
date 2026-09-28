@@ -47,10 +47,11 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.kafka.KafkaContainer;
 import org.testcontainers.utility.DockerImageName;
 
-@SpringBootTest(classes = LaunchGuardApplication.class)
+@SpringBootTest(classes = LaunchGuardApplication.class, webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @TestPropertySource(properties = {"launchguard.monitoring.initial-delay=24h", "launchguard.kafka.partitions=3",
         "spring.kafka.listener.concurrency=3", "launchguard.monitoring.response-timeout=3s",
-        "logging.level.org.apache.kafka=WARN", "logging.level.org.springframework.kafka=WARN"})
+        "logging.level.org.apache.kafka=WARN", "logging.level.org.springframework.kafka=WARN",
+        "management.tracing.sampling.probability=1.0"})
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class KafkaMonitoringIntegrationTest {
@@ -81,6 +82,9 @@ class KafkaMonitoringIntegrationTest {
     @Autowired private JdbcClient jdbc;
     @Autowired private KafkaListenerEndpointRegistry backendListeners;
     @Autowired private ConfigurableApplicationContext backendContext;
+    @Autowired private io.micrometer.core.instrument.MeterRegistry meters;
+    @org.springframework.boot.test.web.server.LocalServerPort private int port;
+    private final java.util.concurrent.atomic.AtomicReference<String> httpTraceparent = new java.util.concurrent.atomic.AtomicReference<>();
     private ConfigurableApplicationContext worker;
     private HttpServer http;
     private java.util.concurrent.ExecutorService httpExecutor;
@@ -90,6 +94,7 @@ class KafkaMonitoringIntegrationTest {
     void startWorkerWithoutAnyDatabase() {
         worker = new SpringApplicationBuilder(ProbeWorkerApplication.class).web(WebApplicationType.NONE).run(
                 "--spring.config.location=optional:classpath:/no-worker-test-config.yml",
+                "--spring.application.name=probe-worker",
                 "--spring.autoconfigure.exclude=org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration",
                 "--spring.kafka.bootstrap-servers=" + KAFKA.getBootstrapServers(),
                 "--spring.kafka.producer.key-serializer=org.apache.kafka.common.serialization.StringSerializer",
@@ -99,6 +104,9 @@ class KafkaMonitoringIntegrationTest {
                 "--spring.kafka.consumer.auto-offset-reset=earliest", "--spring.kafka.consumer.enable-auto-commit=false",
                 "--spring.kafka.consumer.properties.max.poll.records=8", "--spring.kafka.listener.concurrency=3",
                 "--spring.kafka.listener.ack-mode=record", "--spring.kafka.admin.fail-fast=true",
+                "--spring.kafka.template.observation-enabled=true", "--spring.kafka.listener.observation-enabled=true",
+                "--management.tracing.export.otlp.enabled=false", "--management.tracing.sampling.probability=1.0",
+                "--management.otlp.metrics.export.enabled=false", "--management.logging.export.enabled=false",
                 "--launchguard.kafka.partitions=3", "--logging.level.org.apache.kafka=WARN",
                 "--logging.level.org.springframework.kafka=WARN");
         assertThat(worker.containsBean("dataSource")).isFalse();
@@ -114,7 +122,10 @@ class KafkaMonitoringIntegrationTest {
         httpExecutor = Executors.newCachedThreadPool();
         http = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         http.setExecutor(httpExecutor);
-        http.createContext("/healthy", exchange -> { exchange.sendResponseHeaders(200, -1); exchange.close(); });
+        http.createContext("/healthy", exchange -> {
+            httpTraceparent.set(exchange.getRequestHeaders().getFirst("traceparent"));
+            exchange.sendResponseHeaders(200, -1); exchange.close();
+        });
         http.createContext("/failed", exchange -> { exchange.sendResponseHeaders(500, -1); exchange.close(); });
         http.createContext("/slow", exchange -> {
             slowStarted.countDown();
@@ -129,7 +140,7 @@ class KafkaMonitoringIntegrationTest {
     @AfterAll
     void stopContainers() {
         if (worker != null) worker.close();
-        // Close Kafka clients before stopping their broker to avoid noisy reconnect loops.
+        // Spring owns the cached backend context lifecycle. Stop its clients before the broker.
         backendListeners.stop();
         ((org.springframework.kafka.core.DefaultKafkaProducerFactory<?, ?>) template.getProducerFactory()).reset();
         backendContext.getBean(org.apache.kafka.clients.admin.Admin.class).close(Duration.ofSeconds(2));
@@ -186,6 +197,10 @@ class KafkaMonitoringIntegrationTest {
 
     @Test
     void duplicateResultsDoNotDuplicateChecksOrIncidentTransitions() throws Exception {
+        double openedBefore = meters.get("launchguard.incidents.opened").counter().count();
+        double resolvedBefore = meters.get("launchguard.incidents.resolved").counter().count();
+        double failedBefore = meters.get("launchguard.probe.results").tag("status", "DOWN").counter().count();
+        double healthyBefore = meters.get("launchguard.probe.results").tag("status", "HEALTHY").counter().count();
         var service = register("/healthy");
         Instant start = Instant.now();
         var first = result(service, ServiceStatus.DOWN, start);
@@ -208,6 +223,62 @@ class KafkaMonitoringIntegrationTest {
         assertThat(incidents.current(service.getId())).isEmpty();
         assertThat(incidents.findById(service.getId(), open.id()).status().name()).isEqualTo("RESOLVED");
         assertThat(incidents.findAll(service.getId(), 0, 20, null).totalElements()).isEqualTo(1);
+        assertThat(meters.get("launchguard.incidents.opened").counter().count()).isEqualTo(openedBefore + 1);
+        assertThat(meters.get("launchguard.incidents.resolved").counter().count()).isEqualTo(resolvedBefore + 1);
+        assertThat(meters.get("launchguard.probe.results").tag("status", "DOWN").counter().count()).isEqualTo(failedBefore + 3);
+        assertThat(meters.get("launchguard.probe.results").tag("status", "HEALTHY").counter().count()).isEqualTo(healthyBefore + 3);
+    }
+
+    @Test
+    void managementHealthAndPrometheusAreAvailableWithoutSensitiveEndpoints() throws Exception {
+        var client = java.net.http.HttpClient.newHttpClient();
+        for (String path : java.util.List.of("/actuator/health", "/actuator/health/readiness", "/actuator/health/liveness")) {
+            var response = client.send(java.net.http.HttpRequest.newBuilder(java.net.URI.create("http://localhost:" + port + path)).build(),
+                    java.net.http.HttpResponse.BodyHandlers.ofString());
+            assertThat(response.statusCode()).isEqualTo(200);
+            assertThat(response.body()).contains("UP").doesNotContain("password");
+        }
+        var response = client.send(java.net.http.HttpRequest.newBuilder(java.net.URI.create("http://localhost:" + port + "/actuator/prometheus")).build(),
+                java.net.http.HttpResponse.BodyHandlers.ofString());
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.body()).contains("jvm_memory_used_bytes", "launchguard_probe_requests_dispatched_total");
+        var endpoints = backendContext.getBean(org.springframework.boot.actuate.endpoint.web.WebEndpointsSupplier.class)
+                .getEndpoints().stream().map(endpoint -> endpoint.getEndpointId().toString()).toList();
+        assertThat(endpoints).containsExactlyInAnyOrder("health", "prometheus");
+        assertThat(backendContext.getBeansOfType(io.micrometer.core.instrument.MeterRegistry.class).values())
+                .noneMatch(registry -> registry.getClass().getName().contains(".otlp."));
+        assertThat(worker.getBeansOfType(io.micrometer.core.instrument.MeterRegistry.class).values())
+                .noneMatch(registry -> registry.getClass().getName().contains(".otlp."));
+    }
+
+    @Test
+    void w3cTraceContextSurvivesBothKafkaMessagesAndWorkerHttpThreadHop() throws Exception {
+        var service = register("/healthy");
+        try (var requests = dltConsumer(REQUESTS); var results = dltConsumer(RESULTS)) {
+            var queued = dispatcher.dispatch(service.getId());
+            awaitResult(queued.requestId());
+            String requestHeader = traceHeader(requests, queued.requestId());
+            String resultHeader = traceHeader(results, queued.requestId());
+            assertThat(requestHeader).matches("00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}");
+            // W3C Level 2 permits additional flags (e.g. random trace ID); sampled is bit zero.
+            assertThat(Integer.parseInt(requestHeader.split("-")[3], 16) & 1).isEqualTo(1);
+            assertThat(resultHeader.split("-")[1]).isEqualTo(requestHeader.split("-")[1]);
+            assertThat(httpTraceparent.get().split("-")[1]).isEqualTo(requestHeader.split("-")[1]);
+        }
+    }
+
+    private String traceHeader(KafkaConsumer<String, String> consumer, UUID requestId) {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
+        while (System.nanoTime() < deadline) {
+            for (var record : consumer.poll(Duration.ofMillis(100))) {
+                if (record.value().contains(requestId.toString())) {
+                    var header = record.headers().lastHeader("traceparent");
+                    assertThat(header).isNotNull();
+                    return new String(header.value(), java.nio.charset.StandardCharsets.UTF_8);
+                }
+            }
+        }
+        throw new AssertionError("Missing traced Kafka record " + requestId);
     }
 
     @Test

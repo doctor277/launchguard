@@ -27,6 +27,8 @@ public interface IncidentRepository extends JpaRepository<Incident, UUID> {
 
     boolean existsByServiceIdAndStatus(UUID serviceId, IncidentStatus status);
 
+    long countByStatus(IncidentStatus status);
+
     @Query("select i.service.id from Incident i where i.status = io.github.doctor277.launchguard.domain.IncidentStatus.OPEN")
     List<UUID> findOpenServiceIds();
 }

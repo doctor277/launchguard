@@ -44,9 +44,10 @@ import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.containers.PostgreSQLContainer;
 
 @SpringBootTest
+@org.springframework.test.annotation.DirtiesContext(classMode = org.springframework.test.annotation.DirtiesContext.ClassMode.AFTER_CLASS)
 @TestPropertySource(properties = {"launchguard.monitoring.initial-delay=24h",
         "spring.kafka.listener.auto-startup=false", "spring.kafka.admin.auto-create=false",
-        "launchguard.kafka.health-enabled=false"})
+        "launchguard.kafka.health-enabled=false", "management.endpoint.health.group.readiness.include=readinessState,db"})
 class PersistenceIntegrationTest {
 
     private static final String EXTERNAL_DB_URL = System.getenv("LAUNCHGUARD_TEST_DB_URL");
@@ -118,6 +119,36 @@ class PersistenceIntegrationTest {
 
     @Autowired
     private HealthCheckService healthCheckService;
+
+    @Autowired
+    private io.micrometer.core.instrument.MeterRegistry meters;
+
+    @Autowired
+    private io.github.doctor277.launchguard.messaging.ProbeResultPersistence probeResultPersistence;
+
+    @Test
+    void rolledBackHealthAndIncidentTransitionsDoNotIncrementBusinessCounters() {
+        var service = ciService();
+        double failedBefore = meters.get("launchguard.probe.results").tag("status", "DOWN").counter().count();
+        double openedBefore = meters.get("launchguard.incidents.opened").counter().count();
+        new TransactionTemplate(transactionManager).executeWithoutResult(transaction -> {
+            for (int i = 0; i < 3; i++) persistDownResult(service, Instant.now().plusSeconds(i));
+            assertThat(meters.get("launchguard.incidents.opened").counter().count()).isEqualTo(openedBefore);
+            transaction.setRollbackOnly();
+        });
+        assertThat(meters.get("launchguard.incidents.opened").counter().count()).isEqualTo(openedBefore);
+        assertThat(meters.get("launchguard.probe.results").tag("status", "DOWN").counter().count()).isEqualTo(failedBefore);
+        assertThat(incidentService.current(service.getId())).isEmpty();
+        for (int i = 0; i < 3; i++) persistDownResult(service, Instant.now().plusSeconds(i));
+        assertThat(meters.get("launchguard.incidents.opened").counter().count()).isEqualTo(openedBefore + 1);
+        assertThat(meters.get("launchguard.probe.results").tag("status", "DOWN").counter().count()).isEqualTo(failedBefore + 3);
+    }
+
+    private void persistDownResult(MonitoredService service, Instant checkedAt) {
+        probeResultPersistence.persist(new io.github.doctor277.launchguard.events.HealthCheckCompleted(
+                1, UUID.randomUUID(), service.getId(), null,
+                io.github.doctor277.launchguard.events.ServiceStatus.DOWN, 500, 20L, null, checkedAt));
+    }
 
     @Test
     void realHttpChecksKeepThreeServiceIncidentsIndependent() throws Exception {

@@ -1,5 +1,5 @@
 x-application-build-args: &application-build-args
-  APP_VERSION: ${APP_VERSION:-0.7.0-SNAPSHOT}
+  APP_VERSION: ${APP_VERSION:-0.8.0-SNAPSHOT}
   GIT_SHA: ${GIT_SHA:-unknown}
   BUILD_TIMESTAMP: ${BUILD_TIMESTAMP:-unknown}
 
@@ -52,7 +52,7 @@ services:
     restart: unless-stopped
 
   backend:
-    image: ${IMAGE_PREFIX:-launchguard}/backend:${IMAGE_TAG:-0.7.0-SNAPSHOT}
+    image: ${IMAGE_PREFIX:-launchguard}/backend:${IMAGE_TAG:-0.8.0-SNAPSHOT}
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -72,6 +72,9 @@ services:
       MONITORING_RESPONSE_TIMEOUT: ${MONITORING_RESPONSE_TIMEOUT:-5s}
       INCIDENT_FAILURE_THRESHOLD: ${INCIDENT_FAILURE_THRESHOLD:-3}
       INCIDENT_RECOVERY_THRESHOLD: ${INCIDENT_RECOVERY_THRESHOLD:-2}
+      OTEL_TRACING_EXPORT_ENABLED: 'true'
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+      TRACING_SAMPLING_PROBABILITY: ${TRACING_SAMPLING_PROBABILITY:-1.0}
     ports:
       - "127.0.0.1:${LAUNCHGUARD_PORT:-8080}:8080"
     depends_on:
@@ -91,7 +94,7 @@ services:
     networks: [default, database]
 
   probe-worker:
-    image: ${IMAGE_PREFIX:-launchguard}/probe-worker:${IMAGE_TAG:-0.7.0-SNAPSHOT}
+    image: ${IMAGE_PREFIX:-launchguard}/probe-worker:${IMAGE_TAG:-0.8.0-SNAPSHOT}
     build:
       context: .
       dockerfile: probe-worker/Dockerfile
@@ -104,6 +107,9 @@ services:
       PROBE_WORKER_THREADS: ${PROBE_WORKER_THREADS:-4}
       PROBE_WORKER_QUEUE_CAPACITY: ${PROBE_WORKER_QUEUE_CAPACITY:-64}
       PROBE_CONNECT_TIMEOUT: ${MONITORING_CONNECT_TIMEOUT:-2s}
+      OTEL_TRACING_EXPORT_ENABLED: 'true'
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+      TRACING_SAMPLING_PROBABILITY: ${TRACING_SAMPLING_PROBABILITY:-1.0}
     ports:
       - "127.0.0.1:${PROBE_WORKER_PORT:-8084}:8084"
     depends_on:
@@ -120,7 +126,7 @@ services:
     restart: unless-stopped
 
   payment-service:
-    image: ${IMAGE_PREFIX:-launchguard}/payment-service:${IMAGE_TAG:-0.7.0-SNAPSHOT}
+    image: ${IMAGE_PREFIX:-launchguard}/payment-service:${IMAGE_TAG:-0.8.0-SNAPSHOT}
     build:
       context: .
       dockerfile: demo-services/payment-service/Dockerfile
@@ -141,7 +147,7 @@ services:
     restart: unless-stopped
 
   order-service:
-    image: ${IMAGE_PREFIX:-launchguard}/order-service:${IMAGE_TAG:-0.7.0-SNAPSHOT}
+    image: ${IMAGE_PREFIX:-launchguard}/order-service:${IMAGE_TAG:-0.8.0-SNAPSHOT}
     build:
       context: .
       dockerfile: demo-services/order-service/Dockerfile
@@ -162,7 +168,7 @@ services:
     restart: unless-stopped
 
   notification-service:
-    image: ${IMAGE_PREFIX:-launchguard}/notification-service:${IMAGE_TAG:-0.7.0-SNAPSHOT}
+    image: ${IMAGE_PREFIX:-launchguard}/notification-service:${IMAGE_TAG:-0.8.0-SNAPSHOT}
     build:
       context: .
       dockerfile: demo-services/notification-service/Dockerfile
@@ -182,8 +188,88 @@ services:
       - no-new-privileges:true
     restart: unless-stopped
 
+  tempo:
+    image: grafana/tempo:2.10.7@sha256:032b3acb51ed02c4b801473d54bb63e9e9f13738d215126d9843c30283794f4b
+    command: ['-config.file=/etc/tempo.yml']
+    ports:
+      - "127.0.0.1:${TEMPO_PORT:-3200}:3200"
+    volumes:
+      - ./observability/tempo.yml:/etc/tempo.yml:ro
+    tmpfs:
+      - /tmp/tempo:uid=10001,gid=10001,mode=0770,size=1g
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.147.0@sha256:e7c92c715f28ff142f3bcaccd4fc5603cf4c71276ef09954a38eb4038500a5a5
+    command: ['--config=/etc/otelcol/launchguard.yml']
+    ports:
+      - "127.0.0.1:${OTEL_HTTP_PORT:-4318}:4318"
+      - "127.0.0.1:${OTEL_HEALTH_PORT:-13133}:13133"
+    volumes:
+      - ./observability/otel-collector.yml:/etc/otelcol/launchguard.yml:ro
+    depends_on:
+      tempo:
+        condition: service_started
+    mem_limit: 256m
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.10.0@sha256:4a61322ac1103a0e3aea2a61ef1718422a48fa046441f299d71e660a3bc71ae9
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=24h
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - launchguard-prometheus-data:/prometheus
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '-', 'http://127.0.0.1:9090/-/ready']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:12.4.11@sha256:3ea272e5cab64a4a62240c682e2c62433b25614d956d44c299a10cb6994f6f2e
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: 'true'
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_DISABLE_LOGIN_FORM: 'true'
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+      GF_ANALYTICS_REPORTING_ENABLED: 'false'
+      GF_ANALYTICS_CHECK_FOR_UPDATES: 'false'
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: 'false'
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/etc/grafana/dashboards:ro
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      tempo:
+        condition: service_started
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '-', 'http://127.0.0.1:3000/api/health']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
 volumes:
   launchguard-postgres-data:
+  launchguard-prometheus-data:
 
 networks:
   database:

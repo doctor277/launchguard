@@ -7,6 +7,7 @@ import io.github.doctor277.launchguard.dto.HealthCheckResponse;
 import io.github.doctor277.launchguard.dto.PageResponse;
 import io.github.doctor277.launchguard.repository.HealthCheckRepository;
 import io.github.doctor277.launchguard.repository.MonitoredServiceRepository;
+import io.github.doctor277.launchguard.observability.BackendTelemetry;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.Set;
@@ -26,17 +27,19 @@ public class HealthCheckService {
     private final HealthProbe healthProbe;
     private final Clock clock;
     private final IncidentEvaluator incidentEvaluator;
+    private final BackendTelemetry telemetry;
     private final Set<UUID> checksInProgress = ConcurrentHashMap.newKeySet();
 
     public HealthCheckService(MonitoredServiceRepository serviceRepository,
                               HealthCheckRepository healthCheckRepository,
                               HealthProbe healthProbe,
-                              Clock clock, IncidentEvaluator incidentEvaluator) {
+                              Clock clock, IncidentEvaluator incidentEvaluator, BackendTelemetry telemetry) {
         this.serviceRepository = serviceRepository;
         this.healthCheckRepository = healthCheckRepository;
         this.healthProbe = healthProbe;
         this.clock = clock;
         this.incidentEvaluator = incidentEvaluator;
+        this.telemetry = telemetry;
     }
 
     @Transactional
@@ -59,6 +62,7 @@ public class HealthCheckService {
             serviceRepository.save(service);
             healthCheckRepository.flush();
             incidentEvaluator.evaluate(healthCheck);
+            telemetry.resultPersisted(result.status());
             return HealthCheckResponse.from(healthCheck);
         } finally {
             checksInProgress.remove(serviceId);

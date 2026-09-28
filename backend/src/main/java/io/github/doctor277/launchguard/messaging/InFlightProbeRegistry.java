@@ -35,6 +35,10 @@ public class InFlightProbeRegistry {
         return pending.containsKey(serviceId);
     }
 
+    public int size() {
+        return pending.size();
+    }
+
     @Scheduled(fixedDelay = 5000)
     public void removeExpired() {
         Instant now = clock.instant();

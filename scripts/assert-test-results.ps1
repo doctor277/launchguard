@@ -22,5 +22,5 @@ foreach ($module in $modules) {
 foreach ($required in @('PersistenceIntegrationTest','KafkaMonitoringIntegrationTest')) {
     if (-not ($backendNames | Where-Object { $_.EndsWith(".$required") })) { throw "Required real integration suite missing: $required" }
 }
-if ($total -lt 115) { throw "Expected at least the V0.6 baseline of 115 tests, found $total." }
+if ($total -lt 125) { throw "Expected at least the V0.7 baseline of 125 tests, found $total." }
 Write-Host "TEST_GATE_OK tests=$total failures=0 errors=0 skipped=0; PostgreSQL and Kafka suites present."

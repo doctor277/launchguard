@@ -1,5 +1,7 @@
 spring:
   kafka:
+    template:
+      observation-enabled: true
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     admin:
       fail-fast: true
@@ -21,6 +23,7 @@ spring:
         max.poll.records: 8
         max.poll.interval.ms: 300000
     listener:
+      observation-enabled: true
       ack-mode: record
       concurrency: ${KAFKA_CONSUMER_CONCURRENCY:6}
   application:
@@ -47,13 +50,54 @@ server:
   port: ${SERVER_PORT:8080}
 
 management:
+  # The OpenTelemetry starter includes an OTLP meter registry; use Prometheus ONLY for metrics.
+  otlp:
+    metrics:
+      export:
+        enabled: false
+  logging:
+    export:
+      enabled: false
   endpoints:
+    jmx:
+      exposure:
+        exclude: '*'
     web:
       exposure:
-        include: health
+        include: health,prometheus
   endpoint:
     health:
       show-details: never
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: readinessState,db,kafka
+        liveness:
+          include: livenessState
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING_PROBABILITY:0.1}
+    propagation:
+      type: W3C
+    export:
+      otlp:
+        enabled: ${OTEL_TRACING_EXPORT_ENABLED:false}
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+  opentelemetry:
+    tracing:
+      export:
+        otlp:
+          endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
+        schedule-delay: 1s
+
+logging:
+  structured:
+    format:
+      console: logstash
 
 launchguard:
   kafka:

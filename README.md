@@ -1,6 +1,6 @@
 # LaunchGuard
 
-LaunchGuard is a deployment monitoring and reliability platform in development. Version 0.7 adds CI/delivery workflows, image provenance metadata, and idempotent CI deployment reporting. The existing seven-container Kafka lab preserves deployment correlation, reliability metrics, and automatic incidents while processing independent services concurrently.
+LaunchGuard is a deployment monitoring and reliability platform in development. Version 0.8 adds platform metrics, provisioned Grafana dashboards, distributed OpenTelemetry traces, and structured correlation logs. The eleven-container local lab preserves the V0.1-V0.7 reliability, deployment, incident, Kafka, and delivery features.
 
 > LaunchGuard is currently a portfolio/software engineering project. It is not a production monitoring service and should not be used as the sole source of operational health information.
 
@@ -63,7 +63,37 @@ LaunchGuard is a deployment monitoring and reliability platform in development. 
 - Recover poison records to dead-letter topics using bounded consumer retries.
 - Validate the complete Kafka/HTTP/PostgreSQL path with actual Testcontainers.
 
+## V0.8 capabilities
+
+- Inspect backend/worker readiness, liveness, JVM, HTTP, and Kafka client signals.
+- Scrape bounded LaunchGuard counters, latency histograms, and workload gauges with Prometheus.
+- Count committed incident transitions and persisted probe results without double-counting Kafka replays.
+- Trace asynchronous probes across both Kafka messages, worker thread hops, HTTP, persistence, and incident evaluation.
+- Automatically provision Prometheus/Tempo datasources and the LaunchGuard Platform Grafana dashboard.
+- Correlate request/service identifiers with trace/span IDs in structured logs, not metric labels.
+- Preserve the existing schema, APIs, and non-root application images; no new Flyway migration.
+
 ## Architecture
+
+V0.8 adds platform telemetry around the existing monitoring path:
+
+```mermaid
+flowchart LR
+    API[Async API / scheduler] --> Backend[Backend dispatcher]
+    Backend -->|W3C headers + request DTO| Kafka[Kafka]
+    Kafka --> Worker[Probe worker]
+    Worker -->|traced outbound HTTP| Demos[Three demo services]
+    Worker -->|W3C headers + completion DTO| Kafka
+    Kafka --> Persistence[Backend persistence / incident evaluation]
+    Persistence --> DB[(PostgreSQL)]
+    Backend -->|OTLP HTTP traces| Collector[OpenTelemetry Collector]
+    Worker -->|OTLP HTTP traces| Collector
+    Collector -->|OTLP gRPC| Tempo[Single-node Tempo]
+    Prometheus -->|scrape /actuator/prometheus| Backend
+    Prometheus -->|scrape /actuator/prometheus| Worker
+    Grafana --> Prometheus
+    Grafana --> Tempo
+```
 
 V0.7 adds delivery automation around the existing architecture, not a new deployment platform:
 
@@ -90,7 +120,7 @@ flowchart LR
     Developer -->|localhost:8081| Payment
     Developer -->|localhost:8082| Order
     Developer -->|localhost:8083| Notification
-    subgraph Compose[Compose default network]
+    subgraph Compose[Compose networks]
         Backend[backend :8080]
         Kafka[Kafka KRaft :9092]
         Worker[probe-worker :8084]
@@ -184,7 +214,8 @@ launchguard/
 |-- .github/workflows/               CI and opt-in delivery demonstration
 |-- docs/                            Milestone validation reports
 |-- .mvn/wrapper/                    Maven Wrapper configuration
-|-- docker-compose.yml               Complete seven-container reliability lab
+|-- observability/                   Collector / Prometheus / Tempo / Grafana provisioning
+|-- docker-compose.yml               Complete eleven-container observability lab
 |-- .env.example                     Optional Compose overrides
 |-- pom.xml                          Multi-module reactor build
 |-- mvnw / mvnw.cmd
@@ -201,7 +232,7 @@ No global Maven installation is required.
 
 ## Quick start with Docker Compose
 
-Clone your checkout, change into `launchguard`, and start all seven containers:
+Clone your checkout, change into `launchguard`, and start all eleven containers:
 
 ```bash
 git clone <your-launchguard-repository-url>
@@ -276,7 +307,7 @@ In one terminal, start the backend:
 
 ```bash
 ./mvnw -DskipTests package
-java -jar backend/target/launchguard-backend-0.7.0-SNAPSHOT.jar
+java -jar backend/target/launchguard-backend-0.8.0-SNAPSHOT.jar
 ```
 
 On Windows PowerShell or Command Prompt, use `mvnw.cmd` in place of `./mvnw`.
@@ -284,7 +315,7 @@ On Windows PowerShell or Command Prompt, use `mvnw.cmd` in place of `./mvnw`.
 Start the worker in another terminal:
 
 ```bash
-java -jar probe-worker/target/probe-worker-0.7.0-SNAPSHOT-exec.jar
+java -jar probe-worker/target/probe-worker-0.8.0-SNAPSHOT-exec.jar
 ```
 
 For host-run Java processes, Kafka defaults to `localhost:9092`; if its host port changes, set `KAFKA_BOOTSTRAP_SERVERS`. Containers use `kafka:9092` independently of host ports.
@@ -903,6 +934,132 @@ The safe negative demonstration supplies an invalid Compose schema over stdin, r
 
 See [V0.7 validation](docs/v0.7-validation.md) for actual local build/test/lint/image/database/demo evidence. Workflow syntax and equivalent commands are locally verifiable. **GitHub-hosted Actions execution, artifact upload, cache behavior, GITHUB_TOKEN/GHCR permissions, and publication still require a real hosted run.** No repository was pushed and no image publication is claimed.
 
+## V0.8: platform observability
+
+Service reliability analytics (`/api/services/{id}/metrics`) remain database-backed business history. Platform telemetry answers a different question: is LaunchGuard itself working, and where is time being spent? Metrics provide bounded aggregate signals; traces explain individual probes; structured logs correlate execution events. The worker still has no database dependencies or credentials.
+
+### Actuator and runtime configuration
+
+Backend and worker expose only these management paths on their existing HTTP ports:
+
+| Path | Purpose |
+|---|---|
+| `/actuator/health` | Overall application/dependency health; details hidden |
+| `/actuator/health/readiness` | Backend: readiness state, PostgreSQL, Kafka; worker: readiness state, Kafka |
+| `/actuator/health/liveness` | Process liveness state, independent of infrastructure |
+| `/actuator/prometheus` | Prometheus/OpenMetrics scrape |
+
+`env`, `configprops`, `beans`, `heapdump`, and other sensitive endpoints are not exposed. JMX endpoint exposure is disabled. There is no new management port or authentication implementation. Existing application and demo APIs remain unauthenticated, so all Compose host bindings stay on `127.0.0.1`.
+
+```bash
+curl http://localhost:8080/actuator/health/readiness
+curl http://localhost:8084/actuator/health/liveness
+curl http://localhost:8080/actuator/prometheus
+curl http://localhost:9090/api/v1/targets
+```
+
+### Metrics and semantics
+
+| Prometheus name | Bounded labels | Meaning |
+|---|---|---|
+| `launchguard_probe_requests_dispatched_total` | none | Successful broker acknowledgements, not mere dispatch attempts |
+| `launchguard_probe_dispatch_failures_total` | none | Immediate/asynchronous publication failures |
+| `launchguard_probe_results_total` | `status=HEALTHY/DOWN` | Newly persisted sync or async results, after transaction commit |
+| `launchguard_probe_results_ignored_total` | `reason=duplicate/service_deleted` | Consumed results deliberately ignored, after commit |
+| `launchguard_probe_result_processing_seconds_*` | `outcome=success/error` | Backend deserialization, persistence, evaluation, commit and guard release; includes duplicate processing |
+| `launchguard_incidents_opened_total` | none | Committed NEW incident openings only |
+| `launchguard_incidents_resolved_total` | none | Committed OPEN-to-RESOLVED transitions only |
+| `launchguard_current_open_incidents` | none | Current database count, including pre-existing incidents |
+| `launchguard_monitored_services` | none | Current registered-service database count |
+| `launchguard_probe_inflight` | none | Backend's existing process-local request-token registry size |
+| `launchguard_probe_worker_requests_total` | `status=HEALTHY/DOWN/ERROR` | Executed HTTP attempts; ERROR means execution aborted unexpectedly |
+| `launchguard_probe_worker_duration_seconds_*` | `status=HEALTHY/DOWN/ERROR` | HTTP probe execution duration; excludes executor queue/Kafka publication time |
+| `launchguard_probe_worker_active` / `launchguard_probe_worker_queued` | none | Active executor threads / queued tasks |
+
+Timers export `_count`, `_sum`, `_max`, and histogram `_bucket` series (seconds, not milliseconds). Micrometer observations additionally expose timers for dispatch, worker processing, outbound HTTP, result consumption/persistence, and incident evaluation. Those use only bounded status/error keys. The worker-process span includes executor waiting and result publication, while the HTTP span isolates outbound latency.
+
+Business counters register transaction `afterCommit` callbacks. Failed/rolled-back persistence contributes no result or incident transition. V0.6 row locking and request-ID uniqueness remain authoritative: a duplicate has an ignored-result outcome, but no new result row or incident transition. These counters are process-local and reset on restart; they are not a durable exactly-once analytics ledger. A crash between commit and metric increment can undercount. Use the existing SQL APIs/history for durable reliability totals. The two database-backed gauges use count queries on scrape; they do not materialize history. No schema/index changes are needed.
+
+Standard metrics come from Spring Boot/Micrometer: `jvm_memory_used_bytes`, `process_cpu_usage`, GC/thread signals, and `http_server_requests_seconds_*`. Backend HTTP histograms are enabled for API p95. Kafka client binders supply `kafka_producer_record_send_total`, `kafka_consumer_fetch_manager_records_consumed_total`, and `kafka_consumer_fetch_manager_records_lag_max`. Spring Kafka observations supply send/listener latency/error signals. Custom dispatch failures and result processing errors complement these signals. Fetch lag is a client/partition indicator, not a broker-wide monitoring system or a durable business backlog.
+
+### Prometheus, Collector, Tempo, and Grafana
+
+Prometheus scrapes only backend and worker every 5s. The starter's OTLP metric registry and OTLP log export are explicitly disabled. There is no OTLP metric pipeline, duplicate metrics export, demo-service scrape, Kafka exporter, or separate logging backend. Prometheus retains 24h in a named volume across normal Compose restarts. PostgreSQL's existing named volume is unchanged.
+
+Applications send OTLP HTTP traces to `otel-collector:4318/v1/traces`. The Collector accepts OTLP HTTP/gRPC, applies a memory limiter and 1s batching, and forwards traces using OTLP gRPC to `tempo:4317`. The health extension listens on 13133. Application startup is not gated on telemetry availability; monitoring remains functional when export is unavailable, though exporters have finite buffers and can drop traces.
+
+Tempo uses a local single-node filesystem backend with a WAL, 5-minute blocks and 1h retention. Its `/tmp/tempo` storage is a size-limited 1GiB tmpfs, so traces disappear on container stop/recreation. Retention is time-based, not a storage-capacity guarantee. Collector and Tempo images lack a shell/HTTP client: Compose verifies they are running, and the demo separately checks Collector HTTP health and Tempo `/ready`. Configuration validation is not presented as a runtime health check.
+
+Grafana provisions `launchguard-prometheus` and `launchguard-tempo` plus dashboard UID `launchguard-platform`. Open [LaunchGuard Platform](http://localhost:3000/d/launchguard-platform) with anonymous read-only Viewer access; no import or datasource setup is needed. Panels cover SYSTEM, MONITORING, KAFKA, INCIDENTS, and HTTP. Prometheus exemplars can link sampled timer observations to Tempo. Grafana is disposable: provisioning recreates the dashboard/datasources; ad hoc UI state is not retained. Local anonymous inspection is intentionally unsuitable for deployment beyond loopback.
+
+| Component | Image | Default host port | Validated local override |
+|---|---|---|---|
+| Backend | LaunchGuard 0.8.0-SNAPSHOT | 8080 | 9080 |
+| Worker | LaunchGuard 0.8.0-SNAPSHOT | 8084 | 9084 |
+| Payment / order / notification | LaunchGuard 0.8.0-SNAPSHOT | 8081 / 8082 / 8083 | 9081 / 9082 / 9083 |
+| PostgreSQL | 18.6-alpine | 5432 | 15432 |
+| Kafka | 4.3.0 | 9092 | 19092 |
+| Prometheus | v3.10.0 | 9090 | 9090 |
+| Grafana | 12.4.11 | 3000 | 3000 |
+| Tempo | 2.10.7 | 3200 | 3200 |
+| Collector OTLP HTTP / health | 0.147.0 contrib | 4318 / 13133 | 4318 / 13133 |
+
+The four observability images are pinned by version AND digest in Compose. Application containers remain non-root; monitoring images also declare non-root users. OTLP gRPC 4317 stays internal. Override the new host ports with `PROMETHEUS_PORT`, `GRAFANA_PORT`, `TEMPO_PORT`, `OTEL_HTTP_PORT`, and `OTEL_HEALTH_PORT`; internal datasource/scrape/export addresses do not change.
+
+### Trace propagation and structured correlation
+
+```mermaid
+sequenceDiagram
+    participant B as Backend API / scheduler
+    participant K as Kafka
+    participant W as Worker
+    participant H as Target HTTP
+    participant P as Backend result persistence
+    B->>K: Request DTO + W3C traceparent/tracestate headers
+    K->>W: Native listener observation
+    Note over W: Capture child observation; reopen scope on bounded executor
+    W->>H: Outbound HTTP span + W3C header injection
+    H-->>W: Response / deadline failure
+    W->>K: Completion DTO + same trace context
+    K->>P: Native result listener observation
+    P->>P: Transaction / history / incident evaluation spans
+```
+
+Spring Kafka template/listener observations propagate W3C context through Kafka headers. The shared event DTOs and persistent entities do not acquire trace-ID fields. Explicit observation scopes preserve the receiver's child context across the worker's thread hop; outbound JDK HTTP uses a sender context to inject standard headers. Backend custom persistence/incident spans show application boundaries, not individual SQL statements. Demo applications are not instrumented: the outbound span is visible, but no demo-server child span is promised.
+
+Identifiers are high-cardinality trace attributes (`launchguard.request.id`, `launchguard.service.id`) only. JSON console logs use Spring Boot's Logstash format and SLF4J key/value fields. Dispatch, completion, persistence, and incident transitions contain event/request/service/deployment/status/latency context as applicable; tracing adds `traceId` and `spanId` through MDC automatically. Logs never contain full Kafka payloads or credentials. Read them with `docker compose logs backend probe-worker`, find a `requestId`, then paste its trace ID into Grafana Explore with the Tempo datasource.
+
+Compose samples 100% for demonstrations (`TRACING_SAMPLING_PROBABILITY=1.0`). Direct Java execution defaults to 10% and trace export disabled; set `OTEL_TRACING_EXPORT_ENABLED=true` and `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://localhost:4318/v1/traces` to opt in. Sampling is a tracing budget, not a change to health-check or result counter semantics. Incoming context may influence parent sampling; this trusted local lab does not implement a public trace-header abuse policy.
+
+### Cardinality strategy
+
+Never put service IDs, request IDs, deployment IDs, commit SHAs, trace IDs, target URLs, names, or error messages in custom Prometheus tags. Status has at most three values; ignored reason and processing outcome have two. Database gauges have one series per backend, independent of service count. Additional custom observation error tags contain exception types, not IDs/payloads. Native Kafka labels describe fixed clients/topics/partitions, bounded by configured topology rather than registered services. HTTP uses Spring's route templates, not literal ID paths. Trace identifiers in exemplars are not time-series labels. Histogram buckets add a fixed cost per bounded tag combination.
+
+The repeatable demo warms outcome families, creates eight distinct services, dispatches checks, and compares active custom series before/after while rejecting identifier labels. It deletes only its own explicitly tracked fixture IDs; original registrations/history remain intact. This is a cardinality smoke check, not a thousands-of-services capacity benchmark or throughput guarantee.
+
+### Repeatable observability demonstration
+
+```powershell
+$env:MONITORING_INTERVAL='1s'
+$env:MONITORING_INITIAL_DELAY='1s'
+$env:MONITORING_RESPONSE_TIMEOUT='8s'
+docker compose up -d --build --wait --wait-timeout 180
+./scripts/validate-observability-lab.ps1
+
+# Existing nondefault-port WSL lab:
+./scripts/validate-observability-lab.ps1 -BackendUrl http://localhost:9080 -WorkerUrl http://localhost:9084 `
+    -PaymentUrl http://localhost:9081 -OrderUrl http://localhost:9082 -NotificationUrl http://localhost:9083 `
+    -WslDistribution Ubuntu
+```
+
+The script checks health/scrapes/JVM metrics, datasources/dashboard, Collector/Tempo readiness, payment failure/recovery counters, a 5000ms notification probe, independent fast probes, a complete trace, correlation logs, duplicate completion replay through Kafka, database uniqueness, and custom label/series bounds. It restores demo controls in `finally`. Evidence is written to ignored `target/observability-evidence.json`. A replay reconstructs the completion from the actual persisted check without inventing new status/timing; integration tests independently verify request/result Kafka header propagation and exact persisted-result/transition counts.
+
+For screenshots, open the dashboard over `now-15m` after the demo, capture the MONITORING/INCIDENTS panels, then open Grafana Explore -> LaunchGuard Tempo -> Trace ID from the evidence. Expand worker processing, outbound HTTP, and backend result persistence to show the 5s span and complete Kafka path. Capture actual running evidence; do not substitute mock dashboards or claim screenshots were generated automatically.
+
+See [V0.8 validation](docs/v0.8-validation.md) for measured local results, test counts, exact trace/incident evidence, and git status. Hosted GitHub Actions/GHCR execution remains unverified locally; this milestone neither pushes a repository nor publishes images.
+
+Instrumentation choices follow the [Spring Boot tracing reference](https://docs.spring.io/spring-boot/4.1/reference/actuator/tracing.html), [Spring Kafka Micrometer integration](https://docs.spring.io/spring-kafka/reference/kafka/micrometer.html), and [W3C Trace Context Level 2 draft](https://www.w3.org/TR/trace-context-2/) (the sampled flag is bit zero; additional flags such as random trace ID are permitted).
+
 ## Database and query design
 
 `monitored_services` stores service identity, target URL, current status, and lifecycle timestamps. `health_checks` stores immutable check results and references `monitored_services` with `ON DELETE CASCADE`.
@@ -948,7 +1105,7 @@ Registration uses PostgreSQL `FOR NO KEY UPDATE` on the service row before check
 - Incident thresholds are global, not configurable per service; changing them affects the next evaluation of persisted recent history.
 - No distributed scheduling infrastructure or support guarantee for multiple monitoring instances. Database locking and uniqueness protect incident transitions, but the check guard remains process-local.
 - Historical failures before V0.4 are not backfilled into incidents; they can contribute to a streak evaluated by a new check.
-- No dashboard or frontend.
+- Grafana provides platform dashboards only; there is no LaunchGuard application frontend.
 - Timeline results are raw and unpaginated; long `all` windows can produce a large response.
 - Deployment registration records the server time; importing historical deployment timestamps is not supported.
 - Checks capture the current deployment before probing. If registration races with an in-flight probe, that check retains the deployment it observed at the start.
@@ -966,4 +1123,4 @@ The [V0.4 validation report](docs/v0.4-validation.md) records the implementation
 
 The [V0.5 validation report](docs/v0.5-validation.md) records the Maven/Testcontainers run, four image builds, five-container readiness, multi-service outage/latency scenarios, and persisted history across a full Compose restart.
 
-V0.7 stops at CI/CD automation and deployment reporting. Hosted pipeline execution/GHCR policy validation remains an operator follow-up after an authorized push. A frontend, authentication, external notifications, repository/webhook integration, per-service policies, distributed scheduling, AWS/Kubernetes, automatic rollback, AI, and full OpenTelemetry/Prometheus/Grafana observability require separate design and scope in future milestones.
+V0.8 stops at local OpenTelemetry/Prometheus/Grafana platform observability. Hosted pipeline execution/GHCR policy validation remains an operator follow-up after an authorized push. Durable metrics semantics, telemetry retention/capacity policy, stronger readiness/resource budgets, and safe public exposure need further design. A frontend, authentication, external notifications, repository/webhook integration, per-service policies, distributed scheduling, AWS/Kubernetes, automatic rollback, and AI remain future scope and are not implemented here.

@@ -17,6 +17,7 @@ class WorkerHttpProbeTest {
     private HttpServer server;
     private java.util.concurrent.ExecutorService executor;
     private WorkerHttpProbe probe;
+    private io.micrometer.core.instrument.simple.SimpleMeterRegistry meters;
 
     @BeforeEach
     void start() throws Exception {
@@ -37,7 +38,9 @@ class WorkerHttpProbeTest {
             finally { exchange.close(); }
         });
         server.start();
-        probe = new WorkerHttpProbe(HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(1)).build(), Clock.systemUTC());
+        meters = new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+        probe = new WorkerHttpProbe(HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(1)).build(), Clock.systemUTC(),
+                new WorkerTelemetry(meters), io.micrometer.observation.ObservationRegistry.NOOP);
     }
     @AfterEach
     void stop() { server.stop(0); executor.shutdownNow(); }
@@ -57,12 +60,15 @@ class WorkerHttpProbeTest {
         assertThat(result.serviceId()).isEqualTo(request.serviceId());
         assertThat(result.deploymentId()).isEqualTo(request.deploymentId());
         assertThat(result.responseTimeMs()).isNotNegative();
+        assertThat(meters.get("launchguard.probe.worker.requests").tag("status", "HEALTHY").counter().count()).isEqualTo(1);
+        assertThat(meters.get("launchguard.probe.worker.duration").tag("status", "HEALTHY").timer().count()).isEqualTo(1);
     }
     @Test
     void http500IsValidDownResult() {
         var result = probe.probe(request("/failed", 2000));
         assertThat(result.status()).isEqualTo(ServiceStatus.DOWN);
         assertThat(result.httpStatus()).isEqualTo(500);
+        assertThat(meters.get("launchguard.probe.worker.requests").tag("status", "DOWN").counter().count()).isEqualTo(1);
     }
     @Test
     void deadlineProducesDownWithoutHttpStatus() {
@@ -82,6 +88,16 @@ class WorkerHttpProbeTest {
         assertThat(result.status()).isEqualTo(ServiceStatus.DOWN);
         assertThat(result.httpStatus()).isNull();
         assertThat(result.errorMessage()).isNotBlank();
+    }
+
+    @Test
+    void durationReflectsSlowProbeWithoutIdentifierTags() {
+        var result = probe.probe(request("/slow", 2000));
+        assertThat(result.status()).isEqualTo(ServiceStatus.HEALTHY);
+        var timer = meters.get("launchguard.probe.worker.duration").tag("status", "HEALTHY").timer();
+        assertThat(timer.totalTime(java.util.concurrent.TimeUnit.MILLISECONDS)).isGreaterThanOrEqualTo(450);
+        assertThat(meters.getMeters()).allSatisfy(meter ->
+                assertThat(meter.getId().getTags()).allSatisfy(tag -> assertThat(tag.getKey()).isEqualTo("status")));
     }
 
     @Test

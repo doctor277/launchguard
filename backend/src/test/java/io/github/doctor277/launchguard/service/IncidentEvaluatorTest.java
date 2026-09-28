@@ -51,7 +51,9 @@ class IncidentEvaluatorTest {
     void setUp() {
         service = MonitoredService.register("payment", "http://localhost:8081", "/health");
         properties = new IncidentProperties(3, 2);
-        evaluator = new IncidentEvaluator(incidentRepository, evaluationRepository, deploymentRepository, properties);
+        evaluator = new IncidentEvaluator(incidentRepository, evaluationRepository, deploymentRepository, properties,
+                new io.github.doctor277.launchguard.observability.BackendTelemetry(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()),
+                io.micrometer.observation.ObservationRegistry.NOOP);
     }
 
     static Stream<List<ServiceStatus>> belowFailureThreshold() {
@@ -150,7 +152,9 @@ class IncidentEvaluatorTest {
     @Test
     void configuredThresholdsChangeDetectionBehavior() {
         properties = new IncidentProperties(2, 1);
-        evaluator = new IncidentEvaluator(incidentRepository, evaluationRepository, deploymentRepository, properties);
+        evaluator = new IncidentEvaluator(incidentRepository, evaluationRepository, deploymentRepository, properties,
+                new io.github.doctor277.launchguard.observability.BackendTelemetry(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()),
+                io.micrometer.observation.ObservationRegistry.NOOP);
         HealthCheck check = prepare(null, List.of(ServiceStatus.DOWN, ServiceStatus.DOWN));
 
         evaluator.evaluate(check);
@@ -177,7 +181,9 @@ class IncidentEvaluatorTest {
     @Test
     void recoveryThresholdCanBeConfiguredToOne() {
         properties = new IncidentProperties(3, 1);
-        evaluator = new IncidentEvaluator(incidentRepository, evaluationRepository, deploymentRepository, properties);
+        evaluator = new IncidentEvaluator(incidentRepository, evaluationRepository, deploymentRepository, properties,
+                new io.github.doctor277.launchguard.observability.BackendTelemetry(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()),
+                io.micrometer.observation.ObservationRegistry.NOOP);
         Incident incident = Incident.open(service, null, "outage", NOW.minusSeconds(10));
         HealthCheck check = prepare(incident, List.of(ServiceStatus.HEALTHY));
 

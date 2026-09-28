@@ -52,7 +52,8 @@ class HealthCheckServiceTest {
     void setUp() {
         service = MonitoredService.register("payment-service", "http://localhost:8081", "/health");
         healthCheckService = new HealthCheckService(serviceRepository, healthCheckRepository, healthProbe,
-                Clock.fixed(CHECKED_AT, ZoneOffset.UTC), incidentEvaluator);
+                Clock.fixed(CHECKED_AT, ZoneOffset.UTC), incidentEvaluator,
+                new io.github.doctor277.launchguard.observability.BackendTelemetry(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
     }
 
     @Test

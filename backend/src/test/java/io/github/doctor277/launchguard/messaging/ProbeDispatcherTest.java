@@ -20,6 +20,37 @@ import org.springframework.kafka.support.SendResult;
 
 class ProbeDispatcherTest {
     @Test
+    void dispatchedMetricCountsOnlySuccessfulBrokerAcknowledgements() {
+        var repository = mock(MonitoredServiceRepository.class);
+        KafkaTemplate<String, String> template = mock(KafkaTemplate.class);
+        var service = MonitoredService.register("payment", "http://payment-service:8081", "/health");
+        when(repository.findById(service.getId())).thenReturn(Optional.of(service));
+        var publication = new CompletableFuture<SendResult<String, String>>();
+        when(template.send(anyString(), anyInt(), anyString(), anyString())).thenReturn(publication);
+        var meters = new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+        var inFlight = new InFlightProbeRegistry(Clock.systemUTC(), new DispatchProperties(Duration.ofSeconds(120)));
+        var dispatcher = new ProbeDispatcher(repository, inFlight, template, new EventJson(),
+                new KafkaMonitoringProperties("requests", "results", 6),
+                new MonitoringProperties(Duration.ofSeconds(2), Duration.ofSeconds(5)), Clock.systemUTC(),
+                new io.github.doctor277.launchguard.observability.BackendTelemetry(meters),
+                io.micrometer.observation.ObservationRegistry.NOOP);
+        var queued = dispatcher.dispatch(service.getId());
+        assertThat(meters.get("launchguard.probe.requests.dispatched").counter().count()).isZero();
+        publication.complete(mock(SendResult.class));
+        assertThat(meters.get("launchguard.probe.requests.dispatched").counter().count()).isEqualTo(1);
+        assertThat(publication.complete(mock(SendResult.class))).isFalse();
+        assertThat(meters.get("launchguard.probe.requests.dispatched").counter().count()).isEqualTo(1);
+        inFlight.release(service.getId(), queued.requestId());
+        var failed = new CompletableFuture<SendResult<String, String>>();
+        when(template.send(anyString(), anyInt(), anyString(), anyString())).thenReturn(failed);
+        dispatcher.dispatch(service.getId());
+        failed.completeExceptionally(new IllegalStateException("Broker unavailable"));
+        assertThat(meters.get("launchguard.probe.requests.dispatched").counter().count()).isEqualTo(1);
+        assertThat(meters.get("launchguard.probe.dispatch.failures").counter().count()).isEqualTo(1);
+        assertThat(inFlight.size()).isZero();
+    }
+
+    @Test
     void publishesServiceKeyAndDispatchTimeDeploymentSnapshot() {
         var repository = mock(MonitoredServiceRepository.class);
         KafkaTemplate<String, String> template = mock(KafkaTemplate.class);
@@ -33,7 +64,8 @@ class ProbeDispatcherTest {
         var dispatcher = new ProbeDispatcher(repository, registry, template, json,
                 new KafkaMonitoringProperties("requests", "results", 6),
                 new MonitoringProperties(Duration.ofSeconds(2), Duration.ofSeconds(5)),
-                Clock.systemUTC());
+                Clock.systemUTC(), new io.github.doctor277.launchguard.observability.BackendTelemetry(
+                        new io.micrometer.core.instrument.simple.SimpleMeterRegistry()), io.micrometer.observation.ObservationRegistry.NOOP);
         var queued = dispatcher.dispatch(service.getId());
         var payload = ArgumentCaptor.forClass(String.class);
         verify(template).send(eq("requests"), eq(0), eq(service.getId().toString()), payload.capture());
@@ -73,7 +105,8 @@ class ProbeDispatcherTest {
         var registry = new InFlightProbeRegistry(Clock.systemUTC(), new DispatchProperties(Duration.ofSeconds(120)));
         var dispatcher = new ProbeDispatcher(repository, registry, template, new EventJson(),
                 new KafkaMonitoringProperties("requests", "results", 6),
-                new MonitoringProperties(Duration.ofSeconds(2), Duration.ofSeconds(5)), Clock.systemUTC());
+                new MonitoringProperties(Duration.ofSeconds(2), Duration.ofSeconds(5)), Clock.systemUTC(), new io.github.doctor277.launchguard.observability.BackendTelemetry(
+                        new io.micrometer.core.instrument.simple.SimpleMeterRegistry()), io.micrometer.observation.ObservationRegistry.NOOP);
         dispatcher.dispatch(service.getId());
         assertThat(registry.isInFlight(service.getId())).isTrue();
         publication.completeExceptionally(new IllegalStateException("Broker unavailable"));
@@ -90,7 +123,8 @@ class ProbeDispatcherTest {
         var registry = new InFlightProbeRegistry(Clock.systemUTC(), new DispatchProperties(Duration.ofSeconds(120)));
         var dispatcher = new ProbeDispatcher(repository, registry, template, new EventJson(),
                 new KafkaMonitoringProperties("requests", "results", 6),
-                new MonitoringProperties(Duration.ofSeconds(2), Duration.ofSeconds(5)), Clock.systemUTC());
+                new MonitoringProperties(Duration.ofSeconds(2), Duration.ofSeconds(5)), Clock.systemUTC(), new io.github.doctor277.launchguard.observability.BackendTelemetry(
+                        new io.micrometer.core.instrument.simple.SimpleMeterRegistry()), io.micrometer.observation.ObservationRegistry.NOOP);
         assertThatThrownBy(() -> dispatcher.dispatch(service.getId())).isInstanceOf(ProbeDispatchException.class);
         assertThat(registry.isInFlight(service.getId())).isFalse();
     }
