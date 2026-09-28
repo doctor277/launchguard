@@ -12,4 +12,6 @@ public interface DeploymentRepository extends JpaRepository<Deployment, UUID> {
     Page<Deployment> findAllByServiceId(UUID serviceId, Pageable pageable);
 
     Optional<Deployment> findByIdAndServiceId(UUID id, UUID serviceId);
+
+    Optional<Deployment> findByServiceIdAndExternalId(UUID serviceId, String externalId);
 }

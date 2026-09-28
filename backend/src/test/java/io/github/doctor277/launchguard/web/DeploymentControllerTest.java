@@ -10,6 +10,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import io.github.doctor277.launchguard.dto.CreateDeploymentRequest;
 import io.github.doctor277.launchguard.dto.DeploymentResponse;
+import io.github.doctor277.launchguard.dto.DeploymentRegistration;
+import io.github.doctor277.launchguard.domain.DeploymentSource;
+import io.github.doctor277.launchguard.service.DeploymentExternalIdConflictException;
 import io.github.doctor277.launchguard.service.DeploymentNotFoundException;
 import io.github.doctor277.launchguard.service.DeploymentService;
 import io.github.doctor277.launchguard.service.ServiceNotFoundException;
@@ -48,9 +51,9 @@ class DeploymentControllerTest {
         UUID serviceId = UUID.randomUUID();
         UUID deploymentId = UUID.randomUUID();
         Instant deployedAt = Instant.parse("2026-09-24T12:00:00Z");
-        when(deploymentService.create(org.mockito.ArgumentMatchers.eq(serviceId), any(CreateDeploymentRequest.class)))
-                .thenReturn(new DeploymentResponse(deploymentId, serviceId, "v1.0.0", "a921fc7",
-                        "First release", deployedAt, deployedAt, true));
+        when(deploymentService.createOrReplay(org.mockito.ArgumentMatchers.eq(serviceId), any(CreateDeploymentRequest.class)))
+                .thenReturn(new DeploymentRegistration(new DeploymentResponse(deploymentId, serviceId, "v1.0.0", "a921fc7",
+                        "First release", deployedAt, deployedAt, true), true));
 
         mockMvc.perform(post("/api/services/{serviceId}/deployments", serviceId)
                         .contentType(MediaType.APPLICATION_JSON)
@@ -61,7 +64,12 @@ class DeploymentControllerTest {
                 .andExpect(header().string("Location",
                         "/api/services/" + serviceId + "/deployments/" + deploymentId))
                 .andExpect(jsonPath("$.id").value(deploymentId.toString()))
-                .andExpect(jsonPath("$.current").value(true));
+                .andExpect(jsonPath("$.current").value(true))
+                .andExpect(jsonPath("$.source").value("MANUAL"));
+
+        org.mockito.Mockito.verify(deploymentService).createOrReplay(org.mockito.ArgumentMatchers.eq(serviceId),
+                org.mockito.ArgumentMatchers.argThat(request -> request.source() == DeploymentSource.MANUAL
+                        && request.externalId() == null));
     }
 
     @Test
@@ -76,6 +84,57 @@ class DeploymentControllerTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").value("Request validation failed"))
                 .andExpect(jsonPath("$.violations.length()").value(2));
+    }
+
+    @Test
+    void identicalCiReplayReturns200AndMetadata() throws Exception {
+        UUID serviceId = UUID.randomUUID();
+        Instant now = Instant.now();
+        var response = new DeploymentResponse(UUID.randomUUID(), serviceId, "v1", "a921fc7", null, now, now,
+                true, DeploymentSource.CI, "local", "sha-a921fc7", "run-1");
+        when(deploymentService.createOrReplay(org.mockito.ArgumentMatchers.eq(serviceId), any()))
+                .thenReturn(new DeploymentRegistration(response, false));
+        mockMvc.perform(post("/api/services/{serviceId}/deployments", serviceId)
+                .contentType(MediaType.APPLICATION_JSON).content("""
+                {"version":"v1","commitSha":"a921fc7","source":"CI","environment":"local",
+                 "imageTag":"sha-a921fc7","externalId":"run-1"}
+                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.source").value("CI"))
+                .andExpect(jsonPath("$.environment").value("local"))
+                .andExpect(jsonPath("$.imageTag").value("sha-a921fc7"))
+                .andExpect(jsonPath("$.externalId").value("run-1"));
+    }
+
+    @Test
+    void conflictingReplayReturnsStructured409() throws Exception {
+        UUID serviceId = UUID.randomUUID();
+        when(deploymentService.createOrReplay(org.mockito.ArgumentMatchers.eq(serviceId), any()))
+                .thenThrow(new DeploymentExternalIdConflictException());
+        mockMvc.perform(post("/api/services/{serviceId}/deployments", serviceId)
+                .contentType(MediaType.APPLICATION_JSON).content("""
+                {"version":"v2","externalId":"run-1"}
+                """))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.status").value(409))
+                .andExpect(jsonPath("$.message").value("externalId already identifies a deployment with different metadata for this service"));
+    }
+
+    @Test
+    void rejectsInvalidCiMetadataAndUnknownSource() throws Exception {
+        UUID serviceId = UUID.randomUUID();
+        mockMvc.perform(post("/api/services/{serviceId}/deployments", serviceId)
+                .contentType(MediaType.APPLICATION_JSON).content("""
+                {"version":"v1","environment":" ","externalId":" ","imageTag":" "}
+                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.violations.length()").value(3));
+        mockMvc.perform(post("/api/services/{serviceId}/deployments", serviceId)
+                .contentType(MediaType.APPLICATION_JSON).content("""
+                {"version":"v1","source":"MAGIC"}
+                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value(400));
     }
 
     @Test

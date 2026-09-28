@@ -162,7 +162,9 @@ class KafkaMonitoringIntegrationTest {
         var slow = register("/slow");
         var fastPayment = register("/healthy");
         var fastOrder = register("/healthy");
-        var firstDeployment = deployments.create(slow.getId(), new CreateDeploymentRequest("v1", null, null));
+        var firstDeployment = deployments.create(slow.getId(), new CreateDeploymentRequest("v1", "a921fc7", "CI release",
+                io.github.doctor277.launchguard.domain.DeploymentSource.CI, "local", "sha-a921fc7", "kafka-ci-run"));
+        assertThat(firstDeployment.source()).isEqualTo(io.github.doctor277.launchguard.domain.DeploymentSource.CI);
         long started = System.nanoTime();
         var slowQueued = dispatcher.dispatch(slow.getId());
         assertThat(slowStarted.await(10, TimeUnit.SECONDS)).isTrue();

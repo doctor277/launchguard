@@ -1,6 +1,6 @@
 # LaunchGuard
 
-LaunchGuard is a deployment monitoring and reliability platform in development. Version 0.6 decouples scheduled monitoring from network probing with Kafka and a separate probe-worker. The seven-container lab preserves deployment correlation, reliability metrics, and automatic incidents while processing independent services concurrently.
+LaunchGuard is a deployment monitoring and reliability platform in development. Version 0.7 adds CI/delivery workflows, image provenance metadata, and idempotent CI deployment reporting. The existing seven-container Kafka lab preserves deployment correlation, reliability metrics, and automatic incidents while processing independent services concurrently.
 
 > LaunchGuard is currently a portfolio/software engineering project. It is not a production monitoring service and should not be used as the sole source of operational health information.
 
@@ -64,6 +64,25 @@ LaunchGuard is a deployment monitoring and reliability platform in development. 
 - Validate the complete Kafka/HTTP/PostgreSQL path with actual Testcontainers.
 
 ## Architecture
+
+V0.7 adds delivery automation around the existing architecture, not a new deployment platform:
+
+```mermaid
+flowchart LR
+    Change[Developer change] --> CI[GitHub Actions CI]
+    CI --> Compile[Java 25 Maven reactor]
+    Compile --> Tests[Unit and real PostgreSQL / Kafka tests]
+    Tests --> Gate[Zero skips / scripts / actionlint / Compose gate]
+    Gate --> Images[Five non-root images with OCI metadata]
+    Images --> Delivery[Manual trusted-main delivery workflow]
+    Delivery --> Lab[Runner-local Compose demonstration]
+    Delivery -. optional .-> GHCR[GHCR SHA tags and digests]
+    Lab --> Report[PowerShell CI deployment report]
+    Report --> API[Existing deployment API]
+    API --> DB[(V5 metadata and scoped external ID)]
+    API --> Monitor[Existing Kafka monitoring]
+    Monitor --> Checks[Correlated checks and incidents]
+```
 
 ```mermaid
 flowchart LR
@@ -162,6 +181,7 @@ launchguard/
 |   |-- order-service/               Order demo (8082)
 |   `-- notification-service/        Notification demo (8083; no delivery feature)
 |-- scripts/                         Registration and repeatable lab validation
+|-- .github/workflows/               CI and opt-in delivery demonstration
 |-- docs/                            Milestone validation reports
 |-- .mvn/wrapper/                    Maven Wrapper configuration
 |-- docker-compose.yml               Complete seven-container reliability lab
@@ -256,7 +276,7 @@ In one terminal, start the backend:
 
 ```bash
 ./mvnw -DskipTests package
-java -jar backend/target/launchguard-backend-0.6.0-SNAPSHOT.jar
+java -jar backend/target/launchguard-backend-0.7.0-SNAPSHOT.jar
 ```
 
 On Windows PowerShell or Command Prompt, use `mvnw.cmd` in place of `./mvnw`.
@@ -264,7 +284,7 @@ On Windows PowerShell or Command Prompt, use `mvnw.cmd` in place of `./mvnw`.
 Start the worker in another terminal:
 
 ```bash
-java -jar probe-worker/target/probe-worker-0.6.0-SNAPSHOT-exec.jar
+java -jar probe-worker/target/probe-worker-0.7.0-SNAPSHOT-exec.jar
 ```
 
 For host-run Java processes, Kafka defaults to `localhost:9092`; if its host port changes, set `KAFKA_BOOTSTRAP_SERVERS`. Containers use `kafka:9092` independently of host ports.
@@ -793,6 +813,96 @@ The full Maven suite includes real Kafka 4.3 and PostgreSQL 18.6 Testcontainers 
 
 See the [V0.6 validation report](docs/v0.6-validation.md) for actual results and timings.
 
+## V0.7: CI/CD and automatic deployment reporting
+
+### CI and delivery workflows
+
+[ci.yml](.github/workflows/ci.yml) runs on pull requests, pushes to `main`, and reusable workflow calls. It uses Java 25, Maven Wrapper `clean verify`, Maven caching, real PostgreSQL/Kafka Testcontainers, a strict Surefire report gate, PowerShell syntax/contract checks, actionlint 1.7.12 (digest-pinned, with ShellCheck), Compose configuration validation, and all five Docker image builds. Missing reports, missing integration suites, failures, errors, or skipped tests fail the gate. Reports upload even on failure. Obsolete runs for the same PR/branch are cancelled; the Ubuntu 24.04 job has a 40-minute timeout and only `contents: read`. Checkout credentials are not persisted. Only checkout, setup-java, and upload-artifact actions are used, pinned to reviewed release commit SHAs.
+
+[delivery.yml](.github/workflows/delivery.yml) is manually dispatched. Its reusable CI job must succeed before delivery. Delivery itself runs only on a non-fork repository's `main` branch: build SHA-tagged images, start the full runner-local lab, report payment's CI deployment, verify metadata/check/incident correlation, replay it, reject a conflicting retry, and save JSON evidence. The job cleans up its disposable containers afterward. Publishing is disabled by default. Neither workflow creates cloud infrastructure or deploys to a remote host.
+
+External reporting is explicitly skipped when repository variable `LAUNCHGUARD_URL` is unset. If set, also provide `LAUNCHGUARD_SERVICE_ID` and `LAUNCHGUARD_ENVIRONMENT`; the service must already exist. This **registers metadata only** for an operator-managed deployment, not deploys the service. The runner must actually reach that URL; its `localhost` is the runner, never the developer's Windows PC. Do not expose the unauthenticated API publicly just to run this demonstration.
+
+### Image identification and optional GHCR
+
+`set-build-metadata.ps1` reads the root POM version and actual checkout's full Git SHA, supplies a UTC build timestamp, and sets `IMAGE_TAG=sha-<full-sha>`. All five runtime images retain their non-root users and include OCI `version`, `revision`, `created`, and `title` labels. Build arguments contain no credentials. `IMAGE_PREFIX`, `IMAGE_TAG`, `APP_VERSION`, `GIT_SHA`, and `BUILD_TIMESTAMP` are optional Compose overrides; plain local builds use the snapshot tag and `unknown` provenance values rather than inventing a commit/time.
+
+Delivery's `publish_ghcr` input optionally publishes `ghcr.io/<lowercase-owner>/launchguard-<application>:sha-<full-sha>` and `<version>-<full-sha>` for backend, worker, and all three demos. No `latest` or bare-version tag is pushed. It logs in through stdin with built-in `GITHUB_TOKEN`, logs out afterward, and grants only `contents: read` plus `packages: write` to the trusted delivery job. PR CI cannot publish. No PAT or custom secret is required. Package/repository policies may still need maintainer configuration on GitHub.
+
+SHA-based tags identify a tested commit; registries can still permit tag replacement, especially on rebuilds with a new timestamp. For strict content immutability, consumers must pin the registry image digest. Local dirty builds warn that HEAD does not identify uncommitted changes. Hosted clean checkouts are the provenance reference, not uncommitted local demonstrations.
+
+### Deployment contract and retry semantics
+
+The existing endpoint is extended, not replaced:
+
+```http
+POST /api/services/{serviceId}/deployments
+Content-Type: application/json
+
+{
+  "version": "0.7.0-SNAPSHOT",
+  "commitSha": "a921fc7",
+  "description": "GitHub Actions deployment",
+  "source": "CI",
+  "environment": "local",
+  "imageTag": "sha-a921fc7",
+  "externalId": "github-run-192837"
+}
+```
+
+All responses from deployment creation/detail/paginated history include `source`, `environment`, `imageTag`, and `externalId`. DTOs remain the API boundary. Missing/null source defaults to `MANUAL`; old three-field request bodies still work. The source enum contains only `MANUAL` and `CI`. Environment names use 1–64 alphanumeric/dot/underscore/hyphen characters; image identifiers are at most 512 characters, external IDs at most 200, and supplied values must not be blank. These fields are metadata, not shell commands or credentials. Existing history pagination is unchanged; no optional filtering was added.
+
+External IDs are **case-sensitive, scoped to `(serviceId, externalId)`**, and compared exactly (no trimming). One pipeline run can report multiple services, but different environments for the **same** service need distinct external IDs. Omitted IDs create a fresh manual/CI deployment on each call. The first report returns **201 Created** and `Location`; an identical replay returns **200 OK**, the same ID/timestamps, and `Location`. Version is trimmed as before; all other payload fields, including description, SHA case, source, environment, and image tag, must match exactly. Changed metadata returns the existing structured **409 Conflict** error, without changing the original row or current deployment. A retry of an older deployment reports `current=false` and does not reactivate it. Current/incident summary DTOs retain their existing compact fields; retrieve deployment detail for CI metadata.
+
+```mermaid
+flowchart TD
+    Report[POST deployment] --> Lock[Short service row lock]
+    Lock --> ID{Existing service + external ID?}
+    ID -->|No or ID absent| New[Insert deployment and set current: 201]
+    ID -->|Yes| Match{Same payload metadata?}
+    Match -->|Yes| Replay[Return existing: 200; do not change current/history]
+    Match -->|No| Conflict[Structured 409; no writes]
+```
+
+### PowerShell reporting and repeatable local delivery
+
+PowerShell 5.1/7 is first-class; Ubuntu GitHub runners use built-in `pwsh`, so a duplicate Bash client is unnecessary. The small reporting script validates inputs, safely encodes JSON (including quotes/newlines), fails on HTTP/network errors, and prints and returns the deployment ID/version. Retry with the **same** external ID and **identical** arguments. No automatic retry loop or authentication is introduced.
+
+```powershell
+.\scripts\set-build-metadata.ps1
+docker compose build
+$env:MONITORING_INTERVAL = '1s'
+$env:MONITORING_INITIAL_DELAY = '1s'
+docker compose up -d --wait --wait-timeout 180
+$services = @(.\scripts\register-demo-services.ps1)
+$payment = $services | Where-Object Name -eq 'payment-service'
+.\scripts\report-deployment.ps1 -LaunchGuardUrl http://localhost:8080 -ServiceId $payment.Id `
+  -Version $env:APP_VERSION -CommitSha $env:GIT_SHA -Environment local `
+  -ImageTag $env:IMAGE_TAG -ExternalId local-release-001 -Description 'Local CI-style deployment'
+.\scripts\validate-delivery-lab.ps1
+# Engine accessible only through WSL, lab already running:
+.\scripts\validate-delivery-lab.ps1 -WslDistribution Ubuntu
+# Nondefault host ports:
+.\scripts\validate-delivery-lab.ps1 -WslDistribution Ubuntu `
+  -BackendUrl http://localhost:9080 -PaymentUrl http://localhost:9081
+```
+
+The delivery validation script reuses registrations, records HEAD, reports one CI deployment, requires a **new Kafka-generated** healthy check referencing it, triggers payment failure, requires an incident referencing it, recovers payment, and verifies resolution. It snapshots all historical check row IDs and compares a database row digest before/after replay while allowing ongoing monitoring to append new rows. It verifies unchanged deployment count, the same replay ID, a structured conflict, applied V5, and a valid unique index. Evidence is written to ignored `target/delivery-evidence.json`. It leaves the local stack/data intact and always sends payment recovery in `finally`. It requires normal automatic monitoring; this is a small lab validation, not an unbounded production-history export.
+
+### Gates and validation evidence
+
+```powershell
+.\scripts\validate-powershell.ps1
+.\scripts\test-report-deployment.ps1
+.\scripts\assert-test-results.ps1   # after the successful full Maven build
+.\scripts\demonstrate-ci-failure.ps1
+# Or: .\scripts\demonstrate-ci-failure.ps1 -WslDistribution Ubuntu
+```
+
+The safe negative demonstration supplies an invalid Compose schema over stdin, requires a non-zero exit, and checks that the error identifies the invalid property. It changes no source files or containers. That is the same configuration gate used before CI image building: a genuine non-zero gate stops later delivery steps. Maven/Surefire failures similarly stop the pipeline; test-report upload is diagnostic, not permission to continue. Real integration tests are not replaced with mocks.
+
+See [V0.7 validation](docs/v0.7-validation.md) for actual local build/test/lint/image/database/demo evidence. Workflow syntax and equivalent commands are locally verifiable. **GitHub-hosted Actions execution, artifact upload, cache behavior, GITHUB_TOKEN/GHCR permissions, and publication still require a real hosted run.** No repository was pushed and no image publication is claimed.
+
 ## Database and query design
 
 `monitored_services` stores service identity, target URL, current status, and lifecycle timestamps. `health_checks` stores immutable check results and references `monitored_services` with `ON DELETE CASCADE`.
@@ -813,6 +923,10 @@ V4 adds nullable `health_checks.probe_request_id` and a unique partial index ove
 
 Metrics remain database aggregates and history remains paginated. Async dispatch adds one indexed service/deployment lookup and a creation-order count query for partition routing. The count is appropriate for this small registry, not an optimized large-scale scheduler. Result processing adds a service row lock and an indexed request-ID existence check; the incident evaluator continues querying only bounded recent history.
 
+V5 adds nullable environment/image/external-ID columns and `source NOT NULL DEFAULT 'MANUAL'` with a two-value check constraint. Existing rows remain manual with null CI metadata; their original identifiers/times/check links are preserved. V1–V4 are unchanged. The partial unique `(service_id, external_id)` index is created concurrently; `.sql.conf` disables migration transactions, using the existing session-level Flyway advisory lock configuration. Column/constraint changes still require a short schema lock; this was validated at lab scale, not with millions of deployment rows. A failed non-transactional migration may leave partial DDL/an invalid index: inspect state and use a reviewed recovery plan, never automatic repair/drop/downgrade. Reversal is a separate reviewed forward migration.
+
+Registration uses PostgreSQL `FOR NO KEY UPDATE` on the service row before checking/inserting the external ID, serializing concurrent reports (including manual registrations) without conflicting with foreign-key `KEY SHARE` locks from check inserts. The unique index is the final database safeguard. A native service-only lookup avoids locking the nullable side of the current-deployment outer join. Replays do not update rows; existing metrics queries and Kafka dispatch/result contracts remain intact. New registration timestamps are normalized to PostgreSQL microsecond precision.
+
 ## Troubleshooting the lab
 
 - `docker` not found / daemon unreachable: install/start Docker with Linux containers, then check `docker --version`, `docker compose version`, and `docker info`. If Docker lives only in WSL, run Compose inside that distribution (`wsl -d Ubuntu -- docker compose up --build` from the repository).
@@ -830,7 +944,7 @@ Metrics remain database aggregates and history remains paginated. Async dispatch
 - Probe concurrency is bounded, not unlimited. Four simultaneous slow probes can occupy all default worker threads.
 - No authentication, authorization, TLS policy management, or tenant isolation.
 - Incidents are detected from sampled checks, not continuous observation or application telemetry; durations begin at confirmation, not the first failure.
-- No external notifications, alert delivery, GitHub integration, automatic rollback, or AI functionality.
+- No external notifications, alert delivery, automatic rollback, or AI functionality. GitHub integration is limited to delivery workflows/metadata reporting, not webhooks or repository synchronization.
 - Incident thresholds are global, not configurable per service; changing them affects the next evaluation of persisted recent history.
 - No distributed scheduling infrastructure or support guarantee for multiple monitoring instances. Database locking and uniqueness protect incident transitions, but the check guard remains process-local.
 - Historical failures before V0.4 are not backfilled into incidents; they can contribute to a streak evaluated by a new check.
@@ -852,4 +966,4 @@ The [V0.4 validation report](docs/v0.4-validation.md) records the implementation
 
 The [V0.5 validation report](docs/v0.5-validation.md) records the Maven/Testcontainers run, four image builds, five-container readiness, multi-service outage/latency scenarios, and persisted history across a full Compose restart.
 
-V0.6 deliberately stops at event-driven health monitoring. A frontend, authentication, external notification delivery, GitHub integration, per-service policies, distributed infrastructure, automatic rollback, and AI features require separate design and scoping in future versions.
+V0.7 stops at CI/CD automation and deployment reporting. Hosted pipeline execution/GHCR policy validation remains an operator follow-up after an authorized push. A frontend, authentication, external notifications, repository/webhook integration, per-service policies, distributed scheduling, AWS/Kubernetes, automatic rollback, AI, and full OpenTelemetry/Prometheus/Grafana observability require separate design and scope in future milestones.

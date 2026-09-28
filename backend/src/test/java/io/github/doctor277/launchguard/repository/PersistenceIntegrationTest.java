@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import io.github.doctor277.launchguard.domain.Deployment;
+import io.github.doctor277.launchguard.domain.DeploymentSource;
+import io.github.doctor277.launchguard.service.DeploymentExternalIdConflictException;
 import io.github.doctor277.launchguard.domain.HealthCheck;
 import io.github.doctor277.launchguard.domain.MonitoredService;
 import io.github.doctor277.launchguard.domain.ServiceStatus;
@@ -340,7 +342,7 @@ class PersistenceIntegrationTest {
     }
 
     @Test
-    void upgradesV1ToV2ToV3ToV4WithoutChangingLegacyHistory() {
+    void upgradesV1ToV2ToV3ToV4ToV5WithoutChangingLegacyHistory() {
         String schema = "migration_" + UUID.randomUUID().toString().replace("-", "");
         var configuration = Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema)
                 .configuration(java.util.Map.of("flyway.postgresql.transactional.lock", "false"));
@@ -364,6 +366,13 @@ class PersistenceIntegrationTest {
                 .param("deployment", deploymentId).param("id", serviceId).update();
         configuration.target("3").load().migrate();
         configuration.target("4").load().migrate();
+        configuration.target("5").load().migrate();
+
+        assertThat(jdbcClient.sql("SELECT source FROM " + schema + ".deployments WHERE id=:id")
+                .param("id", deploymentId).query(String.class).single()).isEqualTo("MANUAL");
+        assertThat(jdbcClient.sql("SELECT COUNT(*) FROM " + schema
+                + ".deployments WHERE environment IS NULL AND image_tag IS NULL AND external_id IS NULL")
+                .query(Long.class).single()).isEqualTo(1);
 
         assertThat(jdbcClient.sql("SELECT response_time_ms FROM " + schema + ".health_checks WHERE id=:id")
                 .param("id", checkId).query(Long.class).single()).isEqualTo(42);
@@ -373,9 +382,137 @@ class PersistenceIntegrationTest {
                 .param("id", serviceId).query(UUID.class).single()).isEqualTo(deploymentId);
         assertThat(jdbcClient.sql("SELECT COUNT(*) FROM " + schema + ".incidents").query(Long.class).single()).isZero();
         assertThat(jdbcClient.sql("SELECT COUNT(*) FROM " + schema + ".flyway_schema_history WHERE success AND version IS NOT NULL")
-                .query(Long.class).single()).isEqualTo(4);
+                .query(Long.class).single()).isEqualTo(5);
         assertThat(jdbcClient.sql("SELECT COUNT(*) FROM " + schema + ".health_checks WHERE probe_request_id IS NULL")
                 .query(Long.class).single()).isEqualTo(1);
+    }
+
+    @Test
+    void persistsCiMetadataAndMakesDeploymentCurrent() {
+        MonitoredService service = ciService();
+        var registration = deploymentService.createOrReplay(service.getId(), ciRequest("run-metadata"));
+        assertThat(registration.created()).isTrue();
+        var response = registration.deployment();
+        assertThat(response.source()).isEqualTo(DeploymentSource.CI);
+        assertThat(response.environment()).isEqualTo("staging");
+        assertThat(response.imageTag()).isEqualTo("sha-a921fc7");
+        assertThat(response.externalId()).isEqualTo("run-metadata");
+        assertThat(response.current()).isTrue();
+        var persisted = deploymentRepository.findById(response.id()).orElseThrow();
+        assertThat(persisted.getSource()).isEqualTo(DeploymentSource.CI);
+        assertThat(persisted.getEnvironment()).isEqualTo("staging");
+        assertThat(persisted.getImageTag()).isEqualTo("sha-a921fc7");
+        assertThat(persisted.getExternalId()).isEqualTo("run-metadata");
+        assertThat(serviceManager.findById(service.getId()).currentDeployment().id()).isEqualTo(response.id());
+    }
+
+    @Test
+    void manualRequestsStillCreateDistinctDeploymentsWithoutExternalId() {
+        var service = ciService();
+        var request = new CreateDeploymentRequest("v1", null, null);
+        var first = deploymentService.create(service.getId(), request);
+        var second = deploymentService.create(service.getId(), request);
+        assertThat(first.source()).isEqualTo(DeploymentSource.MANUAL);
+        assertThat(first.externalId()).isNull();
+        assertThat(first.environment()).isNull();
+        assertThat(first.imageTag()).isNull();
+        assertThat(first.id()).isNotEqualTo(second.id());
+    }
+
+    @Test
+    void identicalReplayDoesNotReactivateOlderDeploymentOrRewriteChecks() {
+        var service = ciService();
+        var request = ciRequest("run-replay");
+        var first = deploymentService.createOrReplay(service.getId(), request).deployment();
+        var check = persistAndEvaluate(service, ServiceStatus.HEALTHY, Instant.now());
+        var second = deploymentService.create(service.getId(), new CreateDeploymentRequest("v2", null, null));
+        var replay = deploymentService.createOrReplay(service.getId(), request);
+        assertThat(replay.created()).isFalse();
+        assertThat(replay.deployment().id()).isEqualTo(first.id());
+        assertThat(replay.deployment().deployedAt()).isEqualTo(first.deployedAt());
+        assertThat(replay.deployment().current()).isFalse();
+        assertThat(serviceManager.findById(service.getId()).currentDeployment().id()).isEqualTo(second.id());
+        assertThat(deploymentService.findAll(service.getId(), 0, 20).totalElements()).isEqualTo(2);
+        assertThat(jdbcClient.sql("SELECT deployment_id FROM health_checks WHERE id=:id")
+                .param("id", check.getId()).query(UUID.class).single()).isEqualTo(first.id());
+        assertThat(deploymentMetricsRepository.summarize(first.id()).totalChecks()).isEqualTo(1);
+    }
+
+    @Test
+    void rejectsEachMaterialMetadataConflictWithoutChangingHistory() {
+        var service = ciService();
+        var first = deploymentService.create(service.getId(), ciRequest("run-conflict"));
+        for (var conflict : List.of(
+                new CreateDeploymentRequest("v2", "a921fc7", "CI release", DeploymentSource.CI, "staging", "sha-a921fc7", "run-conflict"),
+                new CreateDeploymentRequest("v1", "bbbbbbb", "CI release", DeploymentSource.CI, "staging", "sha-a921fc7", "run-conflict"),
+                new CreateDeploymentRequest("v1", "a921fc7", "changed", DeploymentSource.CI, "staging", "sha-a921fc7", "run-conflict"),
+                new CreateDeploymentRequest("v1", "a921fc7", "CI release", DeploymentSource.MANUAL, "staging", "sha-a921fc7", "run-conflict"),
+                new CreateDeploymentRequest("v1", "a921fc7", "CI release", DeploymentSource.CI, "production", "sha-a921fc7", "run-conflict"),
+                new CreateDeploymentRequest("v1", "a921fc7", "CI release", DeploymentSource.CI, "staging", "sha-bbbbbbb", "run-conflict"))) {
+            assertThatThrownBy(() -> deploymentService.createOrReplay(service.getId(), conflict))
+                    .isInstanceOf(DeploymentExternalIdConflictException.class);
+        }
+        assertThat(deploymentService.findAll(service.getId(), 0, 20).totalElements()).isEqualTo(1);
+        assertThat(deploymentService.findById(service.getId(), first.id())).isEqualTo(first);
+    }
+
+    @Test
+    void sameExternalIdIsAllowedForDifferentServicesButDatabaseRejectsSameServiceDuplicate() {
+        var service = ciService();
+        var other = ciService();
+        var first = deploymentService.create(service.getId(), ciRequest("shared-run"));
+        var second = deploymentService.create(other.getId(), ciRequest("shared-run"));
+        assertThat(first.id()).isNotEqualTo(second.id());
+        assertThatThrownBy(() -> deploymentRepository.saveAndFlush(Deployment.register(service, "v1",
+                "a921fc7", "CI release", Instant.now(), DeploymentSource.CI, "staging", "sha-a921fc7", "shared-run")))
+                .hasMessageContaining("uk_deployments_service_external_id");
+    }
+
+    @Test
+    void concurrentIdenticalReportsCreateExactlyOneDeployment() throws Exception {
+        var service = ciService();
+        CountDownLatch start = new CountDownLatch(1);
+        try (var executor = Executors.newFixedThreadPool(2)) {
+            java.util.concurrent.Callable<io.github.doctor277.launchguard.dto.DeploymentRegistration> report = () -> {
+                if (!start.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("Report did not start");
+                return deploymentService.createOrReplay(service.getId(), ciRequest("concurrent-run"));
+            };
+            var first = executor.submit(report);
+            var second = executor.submit(report);
+            start.countDown();
+            var a = first.get(15, TimeUnit.SECONDS);
+            var b = second.get(15, TimeUnit.SECONDS);
+            assertThat(a.deployment().id()).isEqualTo(b.deployment().id());
+            assertThat(List.of(a.created(), b.created())).containsExactlyInAnyOrder(true, false);
+        }
+        assertThat(deploymentService.findAll(service.getId(), 0, 20).totalElements()).isEqualTo(1);
+    }
+
+    @Test
+    void ciDeploymentCorrelatesWithHealthChecksAndIncidentThroughRecovery() {
+        var service = ciService();
+        var deployment = deploymentService.create(service.getId(), ciRequest("incident-run"));
+        Instant now = Instant.now();
+        for (int i = 0; i < 3; i++) {
+            var check = persistAndEvaluate(service, ServiceStatus.DOWN, now.plusSeconds(i));
+            assertThat(check.getDeployment().getId()).isEqualTo(deployment.id());
+        }
+        var incident = incidentService.current(service.getId()).orElseThrow();
+        assertThat(incident.deployment().id()).isEqualTo(deployment.id());
+        persistAndEvaluate(service, ServiceStatus.HEALTHY, now.plusSeconds(3));
+        persistAndEvaluate(service, ServiceStatus.HEALTHY, now.plusSeconds(4));
+        assertThat(incidentService.findById(service.getId(), incident.id()).status()).isEqualTo(IncidentStatus.RESOLVED);
+        assertThat(incidentService.findById(service.getId(), incident.id()).deployment().id()).isEqualTo(deployment.id());
+    }
+
+    private MonitoredService ciService() {
+        return serviceRepository.saveAndFlush(MonitoredService.register("ci-" + UUID.randomUUID(),
+                "http://payment-service:8081", "/health"));
+    }
+
+    private static CreateDeploymentRequest ciRequest(String externalId) {
+        return new CreateDeploymentRequest("v1", "a921fc7", "CI release", DeploymentSource.CI,
+                "staging", "sha-a921fc7", externalId);
     }
 
     private HealthCheck persistAndEvaluate(MonitoredService service, ServiceStatus status, Instant checkedAt) {

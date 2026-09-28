@@ -3,6 +3,7 @@ package io.github.doctor277.launchguard.web;
 import io.github.doctor277.launchguard.service.CheckAlreadyInProgressException;
 import io.github.doctor277.launchguard.service.DuplicateServiceNameException;
 import io.github.doctor277.launchguard.service.DeploymentNotFoundException;
+import io.github.doctor277.launchguard.service.DeploymentExternalIdConflictException;
 import io.github.doctor277.launchguard.service.ServiceNotFoundException;
 import io.github.doctor277.launchguard.service.IncidentNotFoundException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -34,7 +35,7 @@ public class GlobalExceptionHandler {
     }
 
     @ExceptionHandler({DuplicateServiceNameException.class, CheckAlreadyInProgressException.class,
-            DataIntegrityViolationException.class})
+            DeploymentExternalIdConflictException.class, DataIntegrityViolationException.class})
     ResponseEntity<ApiError> handleConflict(RuntimeException exception, HttpServletRequest request) {
         return error(HttpStatus.CONFLICT, exception.getMessage(), request, List.of());
     }

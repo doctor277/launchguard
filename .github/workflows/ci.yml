@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Java 25 and Maven cache
+        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+          cache-dependency-path: '**/pom.xml'
+      - name: Docker must be available for real integration tests
+        run: docker info
+      - name: Compile and test every Maven module (real PostgreSQL and Kafka)
+        run: sh ./mvnw -B -ntp clean verify
+      - name: Require all modules, integration suites, and zero skipped tests
+        shell: pwsh
+        run: ./scripts/assert-test-results.ps1
+      - name: PowerShell syntax and reporting contract
+        shell: pwsh
+        run: |
+          ./scripts/validate-powershell.ps1
+          ./scripts/test-report-deployment.ps1
+          ./scripts/demonstrate-ci-failure.ps1
+      - name: Workflow lint (pinned tool, includes ShellCheck)
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
+      - name: Whitespace validation
+        run: git diff --check
+      - name: Build metadata
+        shell: pwsh
+        run: ./scripts/set-build-metadata.ps1
+      - name: Validate Compose configuration
+        run: docker compose config --quiet
+      - name: Build all five application images
+        run: docker compose build backend probe-worker payment-service order-service notification-service
+      - name: Preserve test reports even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: '**/target/surefire-reports/**'
+          if-no-files-found: warn
+          retention-days: 7

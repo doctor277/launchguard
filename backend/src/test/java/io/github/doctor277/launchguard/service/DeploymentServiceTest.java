@@ -58,7 +58,7 @@ class DeploymentServiceTest {
 
     @Test
     void firstDeploymentBecomesCurrent() {
-        when(serviceRepository.findById(service.getId())).thenReturn(Optional.of(service));
+        when(serviceRepository.findByIdForDeploymentRegistration(service.getId())).thenReturn(Optional.of(service));
         AtomicReference<Deployment> managed = new AtomicReference<>();
         when(deploymentRepository.save(any(Deployment.class)))
                 .thenAnswer(invocation -> {
@@ -83,7 +83,7 @@ class DeploymentServiceTest {
 
     @Test
     void secondDeploymentReplacesCurrentWithoutChangingFirst() {
-        when(serviceRepository.findById(service.getId())).thenReturn(Optional.of(service));
+        when(serviceRepository.findByIdForDeploymentRegistration(service.getId())).thenReturn(Optional.of(service));
         when(deploymentRepository.save(any(Deployment.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
         deploymentService.create(service.getId(), new CreateDeploymentRequest("v1.0.0", null, null));
@@ -177,7 +177,7 @@ class DeploymentServiceTest {
 
     @Test
     void rejectsMissingService() {
-        when(serviceRepository.findById(service.getId())).thenReturn(Optional.empty());
+        when(serviceRepository.findByIdForDeploymentRegistration(service.getId())).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> deploymentService.create(service.getId(),
                 new CreateDeploymentRequest("v1.0.0", null, null)))

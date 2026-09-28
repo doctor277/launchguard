@@ -30,9 +30,10 @@ public class DeploymentController {
     @PostMapping
     public ResponseEntity<DeploymentResponse> create(@PathVariable UUID serviceId,
                                                       @Valid @RequestBody CreateDeploymentRequest request) {
-        DeploymentResponse created = deploymentService.create(serviceId, request);
-        URI location = URI.create("/api/services/" + serviceId + "/deployments/" + created.id());
-        return ResponseEntity.created(location).body(created);
+        var registration = deploymentService.createOrReplay(serviceId, request);
+        DeploymentResponse deployment = registration.deployment();
+        URI location = URI.create("/api/services/" + serviceId + "/deployments/" + deployment.id());
+        return ResponseEntity.status(registration.created() ? 201 : 200).location(location).body(deployment);
     }
 
     @GetMapping

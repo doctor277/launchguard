@@ -1,0 +1,108 @@
+name: Delivery demonstration
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_ghcr:
+        description: Publish all five images to GHCR after validation
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: delivery-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  tests:
+    # The same full reactor, zero-skip gate, lint, and image build as pull-request CI.
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  delivery:
+    needs: tests
+    if: github.ref == 'refs/heads/main' && !github.event.repository.fork
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      packages: write
+    env:
+      MONITORING_INTERVAL: 1s
+      MONITORING_INITIAL_DELAY: 1s
+      MONITORING_RESPONSE_TIMEOUT: 8s
+    steps:
+      - name: Checkout tested revision
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Immutable build metadata
+        shell: pwsh
+        run: ./scripts/set-build-metadata.ps1
+      - name: Build tested application images
+        run: |
+          docker compose config --quiet
+          docker compose build backend probe-worker payment-service order-service notification-service
+      - name: Start runner-local LaunchGuard lab
+        run: docker compose up -d --wait --wait-timeout 180
+      - name: Produce metadata, report deployment, verify monitoring and idempotency
+        shell: pwsh
+        run: ./scripts/validate-delivery-lab.ps1
+      - name: Optional external deployment report (registration only, not remote deployment)
+        shell: pwsh
+        env:
+          LAUNCHGUARD_URL: ${{ vars.LAUNCHGUARD_URL }}
+          LAUNCHGUARD_SERVICE_ID: ${{ vars.LAUNCHGUARD_SERVICE_ID }}
+          LAUNCHGUARD_ENVIRONMENT: ${{ vars.LAUNCHGUARD_ENVIRONMENT }}
+        run: |
+          if (-not $env:LAUNCHGUARD_URL) {
+            Write-Host 'SKIPPED external reporting: LAUNCHGUARD_URL is unset. Runner-local demonstration completed.'
+          } else {
+            if (-not $env:LAUNCHGUARD_SERVICE_ID -or -not $env:LAUNCHGUARD_ENVIRONMENT) {
+              throw 'External reporting also requires LAUNCHGUARD_SERVICE_ID and LAUNCHGUARD_ENVIRONMENT.'
+            }
+            ./scripts/report-deployment.ps1 -LaunchGuardUrl $env:LAUNCHGUARD_URL -ServiceId $env:LAUNCHGUARD_SERVICE_ID `
+              -Version $env:APP_VERSION -CommitSha $env:GIT_SHA -Environment $env:LAUNCHGUARD_ENVIRONMENT `
+              -ImageTag "sha-$env:GIT_SHA" -ExternalId "github-$env:GITHUB_REPOSITORY_ID-$env:GITHUB_RUN_ID-external" `
+              -Description 'GitHub Actions deployment report; remote deployment is operator-managed'
+          }
+      - name: Optional GHCR publication (never runs for pull requests)
+        if: inputs.publish_ghcr
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+          GHCR_OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          owner="${GHCR_OWNER,,}"
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_OWNER" --password-stdin
+          trap 'docker logout ghcr.io' EXIT
+          for app in backend probe-worker payment-service order-service notification-service; do
+            source="launchguard/$app:$IMAGE_TAG"
+            target="ghcr.io/$owner/launchguard-$app"
+            # Both tags identify this tested commit; bare version/latest tags are intentionally absent.
+            docker tag "$source" "$target:$IMAGE_TAG"
+            docker tag "$source" "$target:$APP_VERSION-$GIT_SHA"
+            docker push "$target:$IMAGE_TAG"
+            docker push "$target:$APP_VERSION-$GIT_SHA"
+          done
+      - name: Runner-local container diagnostics on failure
+        if: failure()
+        run: |
+          docker compose ps -a
+          docker compose logs --no-color --tail 150
+      - name: Save deployment evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: deployment-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/delivery-evidence.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Stop disposable runner-local containers (keep volumes until runner cleanup)
+        if: always()
+        run: docker compose down
