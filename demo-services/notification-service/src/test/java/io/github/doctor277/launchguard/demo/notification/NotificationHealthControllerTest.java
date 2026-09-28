@@ -1,4 +1,4 @@
-package io.github.doctor277.launchguard.demo.payment;
+package io.github.doctor277.launchguard.demo.notification;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -6,11 +6,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.server.ResponseStatusException;
 
-class PaymentHealthControllerTest {
+class NotificationHealthControllerTest {
 
     @Test
     void togglesFailureModeAndRecovers() {
-        var controller = new PaymentHealthController(new DemoProperties(2000));
+        var controller = new NotificationHealthController(new DemoProperties(2000));
         assertThat(controller.health().getStatusCode().value()).isEqualTo(200);
         controller.fail();
         assertThat(controller.health().getStatusCode().value()).isEqualTo(500);
@@ -20,7 +20,7 @@ class PaymentHealthControllerTest {
 
     @Test
     void validatesAndConfiguresLatencyControlsIndependentlyOfFailure() {
-        var controller = new PaymentHealthController(new DemoProperties(1500));
+        var controller = new NotificationHealthController(new DemoProperties(1500));
         assertThat(controller.slow(null).delayMs()).isEqualTo(1500);
         assertThat(controller.slow(300).delayMs()).isEqualTo(300);
         assertThatThrownBy(() -> controller.slow(0)).isInstanceOf(ResponseStatusException.class);
@@ -35,8 +35,8 @@ class PaymentHealthControllerTest {
 
     @Test
     void separateInstancesDoNotShareFailureState() {
-        var first = new PaymentHealthController(new DemoProperties(2000));
-        var second = new PaymentHealthController(new DemoProperties(2000));
+        var first = new NotificationHealthController(new DemoProperties(2000));
+        var second = new NotificationHealthController(new DemoProperties(2000));
         first.fail();
         assertThat(second.health().getStatusCode().value()).isEqualTo(200);
         assertThat(first.health().getStatusCode().value()).isEqualTo(500);

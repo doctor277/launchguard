@@ -1,22 +1,23 @@
 services:
   postgres:
-    image: postgres:18-alpine
+    image: postgres:18.6-alpine
     environment:
       POSTGRES_DB: launchguard
       POSTGRES_USER: launchguard
       POSTGRES_PASSWORD: launchguard
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - launchguard-postgres-data:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U launchguard -d launchguard"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U launchguard -d launchguard"]
       interval: 5s
       timeout: 3s
       retries: 10
     restart: unless-stopped
 
-  backend:
+  launchguard:
+    image: launchguard/backend:0.5.0-SNAPSHOT
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -24,19 +25,86 @@ services:
       DB_URL: jdbc:postgresql://postgres:5432/launchguard
       DB_USERNAME: launchguard
       DB_PASSWORD: launchguard
+      SERVER_PORT: 8080
+      MONITORING_INTERVAL: ${MONITORING_INTERVAL:-5s}
+      MONITORING_INITIAL_DELAY: ${MONITORING_INITIAL_DELAY:-5s}
+      MONITORING_CONNECT_TIMEOUT: ${MONITORING_CONNECT_TIMEOUT:-2s}
+      MONITORING_RESPONSE_TIMEOUT: ${MONITORING_RESPONSE_TIMEOUT:-5s}
+      INCIDENT_FAILURE_THRESHOLD: ${INCIDENT_FAILURE_THRESHOLD:-3}
+      INCIDENT_RECOVERY_THRESHOLD: ${INCIDENT_RECOVERY_THRESHOLD:-2}
     ports:
-      - "8080:8080"
+      - "127.0.0.1:${LAUNCHGUARD_PORT:-8080}:8080"
     depends_on:
       postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-T", "2", "-O", "-", "http://127.0.0.1:8080/actuator/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 45s
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
 
   payment-service:
+    image: launchguard/payment-service:0.5.0-SNAPSHOT
     build:
       context: .
       dockerfile: demo-services/payment-service/Dockerfile
+    environment:
+      SERVER_PORT: 8081
+      DEMO_SLOW_DELAY_MS: ${PAYMENT_SLOW_DELAY_MS:-2000}
     ports:
-      - "8081:8081"
+      - "127.0.0.1:${PAYMENT_PORT:-8081}:8081"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-T", "2", "-O", "-", "http://127.0.0.1:8081/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  order-service:
+    image: launchguard/order-service:0.5.0-SNAPSHOT
+    build:
+      context: .
+      dockerfile: demo-services/order-service/Dockerfile
+    environment:
+      SERVER_PORT: 8082
+      DEMO_SLOW_DELAY_MS: ${ORDER_SLOW_DELAY_MS:-2000}
+    ports:
+      - "127.0.0.1:${ORDER_PORT:-8082}:8082"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-T", "2", "-O", "-", "http://127.0.0.1:8082/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  notification-service:
+    image: launchguard/notification-service:0.5.0-SNAPSHOT
+    build:
+      context: .
+      dockerfile: demo-services/notification-service/Dockerfile
+    environment:
+      SERVER_PORT: 8083
+      DEMO_SLOW_DELAY_MS: ${NOTIFICATION_SLOW_DELAY_MS:-2000}
+    ports:
+      - "127.0.0.1:${NOTIFICATION_PORT:-8083}:8083"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-T", "2", "-O", "-", "http://127.0.0.1:8083/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
 
 volumes:

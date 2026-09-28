@@ -14,6 +14,10 @@ import io.github.doctor277.launchguard.domain.IncidentStatus;
 import io.github.doctor277.launchguard.service.IncidentEvaluator;
 import io.github.doctor277.launchguard.service.IncidentService;
 import io.github.doctor277.launchguard.service.ServiceManager;
+import io.github.doctor277.launchguard.service.HealthCheckService;
+import com.sun.net.httpserver.HttpServer;
+import java.net.InetSocketAddress;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
@@ -24,7 +28,6 @@ import java.time.Instant;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.condition.EnabledIf;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -37,21 +40,14 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.DockerClientFactory;
 
 @SpringBootTest
-@EnabledIf("databaseAvailable")
 @TestPropertySource(properties = "launchguard.monitoring.initial-delay=24h")
 class PersistenceIntegrationTest {
 
     private static final String EXTERNAL_DB_URL = System.getenv("LAUNCHGUARD_TEST_DB_URL");
 
     static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:18-alpine");
-
-    static boolean databaseAvailable() {
-        return EXTERNAL_DB_URL != null && !EXTERNAL_DB_URL.isBlank()
-                || DockerClientFactory.instance().isDockerAvailable();
-    }
 
     @DynamicPropertySource
     static void databaseProperties(DynamicPropertyRegistry registry) {
@@ -115,6 +111,67 @@ class PersistenceIntegrationTest {
 
     @Autowired
     private DataSource dataSource;
+
+    @Autowired
+    private HealthCheckService healthCheckService;
+
+    @Test
+    void realHttpChecksKeepThreeServiceIncidentsIndependent() throws Exception {
+        List<HttpServer> servers = new java.util.ArrayList<>();
+        List<AtomicBoolean> failures = List.of(new AtomicBoolean(), new AtomicBoolean(), new AtomicBoolean());
+        List<MonitoredService> services = new java.util.ArrayList<>();
+        try {
+            for (int index = 0; index < 3; index++) {
+                AtomicBoolean failure = failures.get(index);
+                HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+                server.createContext("/health", exchange -> {
+                    exchange.sendResponseHeaders(failure.get() ? 500 : 200, -1);
+                    exchange.close();
+                });
+                servers.add(server);
+                server.start();
+                services.add(serviceRepository.saveAndFlush(MonitoredService.register(
+                        "multi-service-" + index, "http://127.0.0.1:" + server.getAddress().getPort(), "/health")));
+            }
+            for (MonitoredService service : services) {
+                assertThat(healthCheckService.check(service.getId()).status()).isEqualTo(ServiceStatus.HEALTHY);
+            }
+
+            failures.get(1).set(true);
+            for (int check = 0; check < 3; check++) {
+                assertThat(healthCheckService.check(services.get(1).getId()).status()).isEqualTo(ServiceStatus.DOWN);
+            }
+            var orderIncident = incidentService.current(services.get(1).getId()).orElseThrow();
+            assertThat(orderIncident.serviceId()).isEqualTo(services.get(1).getId());
+            assertThat(incidentService.current(services.get(0).getId())).isEmpty();
+            assertThat(incidentService.current(services.get(2).getId())).isEmpty();
+
+            failures.get(1).set(false);
+            for (int check = 0; check < 2; check++) {
+                assertThat(healthCheckService.check(services.get(1).getId()).status()).isEqualTo(ServiceStatus.HEALTHY);
+            }
+            assertThat(incidentService.current(services.get(1).getId())).isEmpty();
+            assertThat(incidentService.findById(services.get(1).getId(), orderIncident.id()).status())
+                    .isEqualTo(IncidentStatus.RESOLVED);
+
+            failures.get(0).set(true);
+            failures.get(2).set(true);
+            for (int check = 0; check < 3; check++) {
+                healthCheckService.check(services.get(0).getId());
+                healthCheckService.check(services.get(2).getId());
+            }
+            var paymentIncident = incidentService.current(services.get(0).getId()).orElseThrow();
+            var notificationIncident = incidentService.current(services.get(2).getId()).orElseThrow();
+            assertThat(paymentIncident.id()).isNotEqualTo(notificationIncident.id());
+            assertThat(paymentIncident.serviceId()).isEqualTo(services.get(0).getId());
+            assertThat(notificationIncident.serviceId()).isEqualTo(services.get(2).getId());
+            assertThat(incidentService.current(services.get(1).getId())).isEmpty();
+            assertThat(healthCheckRepository.findAllByServiceId(services.get(1).getId(), PageRequest.of(0, 20)))
+                    .hasSize(6);
+        } finally {
+            servers.forEach(server -> server.stop(0));
+        }
+    }
 
     @Test
     void incidentLifecyclePreservesDeploymentAndResetsInterruptedRecovery() {

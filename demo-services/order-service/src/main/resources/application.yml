@@ -1,9 +1,7 @@
 spring:
   application:
-    name: payment-service
-
+    name: order-service
 server:
-  port: ${SERVER_PORT:8081}
-
+  port: ${SERVER_PORT:8082}
 demo:
   slow-delay-ms: ${DEMO_SLOW_DELAY_MS:2000}

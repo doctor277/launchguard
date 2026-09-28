@@ -1,4 +1,4 @@
-package io.github.doctor277.launchguard.demo.payment;
+package io.github.doctor277.launchguard.demo.notification;
 
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -14,14 +14,14 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
 @RestController
-public class PaymentHealthController {
+public class NotificationHealthController {
 
-    private static final Logger log = LoggerFactory.getLogger(PaymentHealthController.class);
+    private static final Logger log = LoggerFactory.getLogger(NotificationHealthController.class);
     private final AtomicBoolean failureMode = new AtomicBoolean(false);
     private final AtomicLong delayMs = new AtomicLong();
     private final DemoProperties properties;
 
-    public PaymentHealthController(DemoProperties properties) {
+    public NotificationHealthController(DemoProperties properties) {
         this.properties = properties;
     }
 

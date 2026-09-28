@@ -1,6 +1,12 @@
 .git
 .idea
 .vscode
+.tools
+.maven-home
+.agents
+.codex
+docs
+scripts
 **/target
 *.log
 .env*

@@ -1,6 +1,6 @@
 # LaunchGuard
 
-LaunchGuard is a deployment monitoring and reliability platform in development. Version 0.4 adds automatic incident detection to service health checks, reliability history, and deployment correlation. Repeated failed checks open an incident; repeated successful checks resolve it. Earlier checks and resolved incidents retain their original deployment associations.
+LaunchGuard is a deployment monitoring and reliability platform in development. Version 0.5 packages the existing monitoring engine, deployment correlation, and automatic incidents into a reproducible five-container reliability lab. Payment, order, and notification demos can fail or slow down independently; LaunchGuard records their history and confirms incidents through consecutive checks.
 
 > LaunchGuard is currently a portfolio/software engineering project. It is not a production monitoring service and should not be used as the sole source of operational health information.
 
@@ -42,12 +42,43 @@ LaunchGuard is a deployment monitoring and reliability platform in development. 
 - Read paginated/filterable incident history, current incidents, and windowed incident metrics.
 - Expose `hasOpenIncident` in service responses without embedding incident history.
 
+## V0.5 capabilities
+
+- Start PostgreSQL 18, LaunchGuard, and three independent demos with `docker compose up --build`.
+- Monitor demos using Docker DNS, with host ports reserved for developer API calls.
+- Gate backend startup on database health and check every container's readiness.
+- Build four multi-stage application images that run as non-root users.
+- Register the demos explicitly and idempotently with a PowerShell bootstrap.
+- Simulate HTTP failures, artificial latency, timeouts, and container outages.
+- Validate automatic incident isolation, recovery, and persistent history across a full restart.
+- Require the PostgreSQL Testcontainers suite to run by default; missing Docker is an error, not a skip.
+
 ## Architecture
 
 ```mermaid
 flowchart LR
+    Developer[Developer on host] -->|localhost:8080| Backend
+    Developer -->|localhost:8081| Payment
+    Developer -->|localhost:8082| Order
+    Developer -->|localhost:8083| Notification
+    subgraph Compose[Compose default network]
+        Backend[launchguard :8080]
+        Payment[payment-service :8081]
+        Order[order-service :8082]
+        Notification[notification-service :8083]
+        DB[(postgres :5432)]
+        Backend -->|HTTP /health via Docker DNS| Payment
+        Backend -->|HTTP /health via Docker DNS| Order
+        Backend -->|HTTP /health via Docker DNS| Notification
+        Backend -->|JDBC after database healthy| DB
+    end
+    DB --> Volume[(Named PostgreSQL volume)]
+```
+
+```mermaid
+flowchart LR
     Client[API client] -->|REST| API[LaunchGuard controllers]
-    Scheduler[30-second scheduler] --> Engine[Health-check service]
+    Scheduler[Configurable fixed-delay scheduler] --> Engine[Health-check service]
     API --> Services[Service management]
     API --> Engine
     API --> Analytics[Metrics and timeline service]
@@ -61,7 +92,7 @@ flowchart LR
     Deployments -->|current deployment and scoped metrics| Repositories
     Incidents -->|pagination and aggregate SQL| Repositories
     Evaluator -->|bounded recent checks and row lock| Repositories
-    Probe --> Payment[Demo payment service]
+    Probe --> Demos[Payment / order / notification demos]
     Repositories --> PostgreSQL[(PostgreSQL 18)]
     Flyway[Flyway migrations] --> PostgreSQL
 ```
@@ -69,6 +100,8 @@ flowchart LR
 The backend uses a controller/service/repository structure. The HTTP probe owns network behavior and timing; the health-check service atomically persists the result and updates the current service status. An in-process guard prevents overlapping checks of the same service within one backend instance.
 
 V0.2 adds a metrics service, a database aggregation repository, a dedicated time-window parser, lightweight timeline projections, and an API-owned pagination response. V0.3 adds a deployment service and deployment-specific SQL aggregation. V0.4 adds a dedicated incident evaluator and read-only incident APIs. Controllers return DTOs; JPA entities, Spring `Page` objects, and database projection types do not leak through the REST contract.
+
+V0.5 preserves that structure and the applied migrations. The only new backend runtime component is Spring Boot Actuator's health endpoint, including the datasource health indicator; only `/actuator/health` is exposed and details are hidden. Compose waits for PostgreSQL health before starting LaunchGuard. Demos do not gate backend startup: an unavailable target is a normal monitored failure. Docker health status does not restart an unhealthy demo; `restart: unless-stopped` handles exited processes, not failed probes.
 
 ```mermaid
 flowchart LR
@@ -99,9 +132,14 @@ launchguard/
 |   |-- src/main/resources/db/migration/
 |   `-- src/test/java/
 |-- demo-services/
-|   `-- payment-service/             Controllable demo HTTP service
+|   |-- payment-service/             Payment demo (8081)
+|   |-- order-service/               Order demo (8082)
+|   `-- notification-service/        Notification demo (8083; no delivery feature)
+|-- scripts/                         Registration and repeatable lab validation
+|-- docs/                            Milestone validation reports
 |-- .mvn/wrapper/                    Maven Wrapper configuration
-|-- docker-compose.yml               PostgreSQL and optional application stack
+|-- docker-compose.yml               Complete five-container reliability lab
+|-- .env.example                     Optional Compose overrides
 |-- pom.xml                          Multi-module reactor build
 |-- mvnw / mvnw.cmd
 `-- README.md
@@ -109,26 +147,41 @@ launchguard/
 
 ## Prerequisites
 
-- Java 25
-- Docker with Docker Compose for PostgreSQL and containerized execution
+- Docker Engine/Desktop with Linux containers and Docker Compose v2+ for the lab.
+- PowerShell 5.1+ or PowerShell 7 for the registration and validation scripts.
+- Java 25 only when building/testing or running applications outside Docker.
 
 No global Maven installation is required.
 
 ## Quick start with Docker Compose
 
-Build and start PostgreSQL, LaunchGuard, and the demo service:
+Clone your checkout, change into `launchguard`, and start all five containers:
 
 ```bash
-docker compose up --build -d
+git clone <your-launchguard-repository-url>
+cd launchguard
+docker compose up --build
 ```
 
-The services are available at:
+The first build downloads Java images and Maven dependencies. For detached, readiness-checked startup use `docker compose up --build -d --wait --wait-timeout 180`.
+
+All published ports are bound to host loopback, not all network interfaces:
 
 - LaunchGuard API: `http://localhost:8080`
 - Demo payment service: `http://localhost:8081`
+- Demo order service: `http://localhost:8082`
+- Demo notification service: `http://localhost:8083`
 - PostgreSQL: `localhost:5432`
 
-The Compose-only URL used when registering the demo is `http://payment-service:8081`, because the backend reaches it over the Compose network:
+In a second terminal, register all three demos explicitly:
+
+```powershell
+.\scripts\register-demo-services.ps1
+```
+
+Repeat execution reuses the same service IDs. An existing name with a different target produces a clear error without overwriting or deleting history. Normal backend startup never seeds demo data.
+
+The registered targets are `http://payment-service:8081`, `http://order-service:8082`, and `http://notification-service:8083`. Host port overrides do not change these internal URLs. In a backend container, `localhost` means that backend itself, not a demo. Equivalent manual registration for one demo:
 
 ```bash
 curl -X POST http://localhost:8080/api/services \
@@ -140,7 +193,7 @@ Inspect containers and logs:
 
 ```bash
 docker compose ps
-docker compose logs -f backend payment-service
+docker compose logs -f launchguard payment-service order-service notification-service
 ```
 
 Stop the stack without deleting PostgreSQL data:
@@ -157,7 +210,11 @@ The local credentials in `docker-compose.yml` are development defaults only:
 | Username | `launchguard` |
 | Password | `launchguard` |
 
-PostgreSQL data is retained in the named `launchguard-postgres-data` volume.
+PostgreSQL data is retained in the named `launchguard-postgres-data` volume (normally `launchguard_launchguard-postgres-data`, prefixed with the Compose project name). PostgreSQL 18 mounts `/var/lib/postgresql`, including its version-specific data directory. `docker compose down` followed by `docker compose up -d --wait` recreates containers without losing registrations, checks, deployments, or incidents.
+
+To **erase all lab database history**, deliberately run `docker compose down -v`, then start and register the demos again. This is destructive; do not use it for ordinary stops/restarts. Do not change the Compose project name/directory if you intend to reuse the same volume.
+
+Optional overrides: copy `.env.example` to `.env` and edit it before starting. For example, set `POSTGRES_PORT=5433` if a host PostgreSQL already owns port 5432. The backend still connects to `postgres:5432` internally. Host port overrides are `LAUNCHGUARD_PORT`, `PAYMENT_PORT`, `ORDER_PORT`, and `NOTIFICATION_PORT`; pass corresponding host URLs to scripts when changed.
 
 ## Run applications locally
 
@@ -175,13 +232,15 @@ In one terminal, start the backend:
 
 On Windows PowerShell or Command Prompt, use `mvnw.cmd` in place of `./mvnw`.
 
-In another terminal, start the demo service:
+Start each demo in its own terminal:
 
 ```bash
 ./mvnw -pl demo-services/payment-service spring-boot:run
+./mvnw -pl demo-services/order-service spring-boot:run
+./mvnw -pl demo-services/notification-service spring-boot:run
 ```
 
-When both applications run directly on the host, register the demo with `http://localhost:8081` as its base URL.
+When all applications run directly on the host, register with `.\scripts\register-demo-services.ps1 -Target Local`. This selects localhost ports 8081/8082/8083. Do not reuse Docker-target registrations against a host backend without explicitly resolving the conflicting targets. If PostgreSQL's host port is changed, set `DB_URL` accordingly before running the backend.
 
 ### Configuration
 
@@ -192,6 +251,7 @@ The backend accepts these environment variables:
 | `DB_URL` | `jdbc:postgresql://localhost:5432/launchguard` | JDBC connection URL |
 | `DB_USERNAME` | `launchguard` | Database username |
 | `DB_PASSWORD` | `launchguard` | Local development password |
+| `SERVER_PORT` | `8080` | Backend HTTP port; demos default to 8081/8082/8083 |
 | `MONITORING_INTERVAL` | `30s` | Delay between scheduled monitoring passes |
 | `MONITORING_INITIAL_DELAY` | `30s` | Delay before the first scheduled pass |
 | `MONITORING_CONNECT_TIMEOUT` | `2s` | HTTP connection timeout |
@@ -199,12 +259,17 @@ The backend accepts these environment variables:
 | `INCIDENT_FAILURE_THRESHOLD` | `3` | Consecutive DOWN checks required to open an incident |
 | `INCIDENT_RECOVERY_THRESHOLD` | `2` | Consecutive HEALTHY checks required to resolve an incident |
 
+Compose overrides the monitoring interval and initial delay to `5s` for an interactive lab; direct execution retains `30s`. A monitoring pass probes services sequentially, so latency and timeouts extend the effective sampling interval.
+
+Each demo accepts `DEMO_SLOW_DELAY_MS` (default `2000`, range 1..30000) as the delay used by `POST /admin/slow` without an argument. Compose maps `PAYMENT_SLOW_DELAY_MS`, `ORDER_SLOW_DELAY_MS`, and `NOTIFICATION_SLOW_DELAY_MS` to the corresponding container. Demos always start healthy with delay disabled; controls are in-memory and reset on application restart.
+
 Hibernate is configured with `ddl-auto: validate`; it never creates the production schema. Flyway applies `V1__create_monitoring_schema.sql`, `V2__add_deployment_tracking.sql`, and `V3__add_incidents.sql` in order. Existing V1/V2 data remains valid after V3.
 
 ## API
 
 | Method | Path | Result |
 |---|---|---|
+| `GET` | `/actuator/health` | Backend/database container readiness, without details |
 | `POST` | `/api/services` | Register a service (`201 Created`) |
 | `GET` | `/api/services` | List registered services |
 | `GET` | `/api/services/{id}` | Get one service |
@@ -463,6 +528,86 @@ curl http://localhost:8080/api/services/SERVICE_ID/incident-metrics
 
 Repeat failure mode and three failed checks to create a second incident. Registering v1.1.0 while an incident is OPEN changes future checks but not that incident's deployment. The same detection and recovery behavior works for a service with no registered deployment.
 
+## V0.5 multi-service failure lab
+
+All three demos expose the same controls, independently:
+
+| Method/path | Effect |
+|---|---|
+| `GET /health` | HTTP 200 normally, HTTP 500 in failure mode; applies artificial delay |
+| `POST /admin/fail` | Enable failure mode |
+| `POST /admin/recover` | Disable failure mode; does not remove delay |
+| `POST /admin/slow?delayMs=250` | Set artificial latency (1..30000 ms); omit argument for configured default |
+| `POST /admin/normal` | Remove delay; does not disable failure mode |
+
+Invalid delay values return HTTP 400. These unauthenticated admin endpoints are intentional local demo controls, not production APIs. The notification demo does not send notifications.
+
+Register the demos first and copy their IDs from the script or `GET /api/services`. The following scenarios rely on the scheduler; no manual check is needed.
+
+### A: isolated order failure
+
+```bash
+curl -X POST http://localhost:8082/admin/fail
+curl http://localhost:8080/api/services
+curl http://localhost:8080/api/services/ORDER_ID/incidents/current
+# After 3 DOWN checks: order has an OPEN incident; payment and notification remain HEALTHY.
+curl -X POST http://localhost:8082/admin/recover
+curl "http://localhost:8080/api/services/ORDER_ID/incidents?status=RESOLVED"
+# After 2 HEALTHY checks: the original incident is RESOLVED; history remains.
+```
+
+With the lab's 5s delay, allow several passes for confirmation. `HEALTHY` can precede incident resolution by one recovery check.
+
+### B: simultaneous independent outages
+
+```bash
+curl -X POST http://localhost:8081/admin/fail
+curl -X POST http://localhost:8083/admin/fail
+curl http://localhost:8080/api/services/PAYMENT_ID/incidents/current
+curl http://localhost:8080/api/services/NOTIFICATION_ID/incidents/current
+# Distinct incident IDs and service IDs; order remains HEALTHY.
+curl -X POST http://localhost:8081/admin/recover
+curl -X POST http://localhost:8083/admin/recover
+```
+
+### C: slow responses and timeouts
+
+```bash
+curl -X POST "http://localhost:8083/admin/slow?delayMs=250"
+curl "http://localhost:8080/api/services/NOTIFICATION_ID/checks?size=20"
+curl "http://localhost:8080/api/services/NOTIFICATION_ID/metrics/timeline?window=1h"
+# New HEALTHY checks show >=250 ms.
+curl -X POST "http://localhost:8083/admin/slow?delayMs=7000"
+# Exceeds the default 5s response timeout: DOWN, null httpStatus, timeout error and duration recorded.
+curl -X POST http://localhost:8083/admin/normal
+# Subsequent checks recover; prolonged timeouts may also open an incident.
+```
+
+Docker's demo health probe has a 2s timeout, independent of LaunchGuard's 5s probe timeout. A demo can become Docker-unhealthy while LaunchGuard still accepts a 3s response. Intentional failures do not cause a Docker restart.
+
+Transport error text is client-dependent: Java's HTTP client can report `Request cancelled` when the configured response deadline expires. For this scenario, a null HTTP status plus a duration near 5000ms (below the injected 7000ms) demonstrates the timeout; the original error text is preserved.
+
+### Container outage and repeatable validation
+
+```bash
+docker compose stop order-service
+# Scheduler records DOWN with a connection error; after the threshold, an OPEN incident.
+docker compose start order-service
+# Application starts healthy; scheduler records recovery and resolves the incident.
+```
+
+To execute all scenarios, inspect database UUIDs directly, restart the full environment without removing its volume, and verify every prior row survives:
+
+```powershell
+.\scripts\validate-demo-lab.ps1
+# Docker engine/CLI inside Ubuntu WSL, with PowerShell scripts on Windows:
+.\scripts\validate-demo-lab.ps1 -WslDistribution Ubuntu
+# Custom host ports:
+.\scripts\validate-demo-lab.ps1 -BackendUrl http://localhost:9080 -PaymentUrl http://localhost:9081 -OrderUrl http://localhost:9082 -NotificationUrl http://localhost:9083
+```
+
+This script intentionally changes demo controls and recreates this Compose project's containers. It never removes volumes or invokes manual LaunchGuard checks; incident confirmation must come from scheduled checks. Run it only against the local lab with the default 5s HTTP response timeout. It polls state with bounded deadlines rather than assuming fixed startup sleeps. The final report includes service/incident samples, latency/network failures, database counts, container health, and non-root runtime verification. Existing lab data is preserved.
+
 ## Tests and build
 
 Run the complete reactor test suite:
@@ -471,20 +616,33 @@ Run the complete reactor test suite:
 ./mvnw clean test
 ```
 
-Build both executable applications:
+Build all four executable applications in the five-module reactor:
 
 ```bash
 ./mvnw clean package
 ```
 
-Unit tests cover the V0.1 probing, persistence, transitions, API validation, and demo failure/recovery behavior. V0.2 adds coverage for windowed metrics and pagination. V0.3 adds deployment registration, replacement, correlation, scoped metrics, validation, and pagination tests. V0.4 adds failure/recovery thresholds, interrupted streaks, deployment snapshots, incident APIs, filtering, durations, and incident metrics. PostgreSQL integration tests exercise full lifecycles, concurrent evaluation, database uniqueness, foreign keys, deletion semantics, database aggregation, and staged V1-to-V2-to-V3 migration compatibility. They use Testcontainers when Docker is available and skip when neither Docker nor an external test database is configured.
+Unit tests cover the V0.1 probing, persistence, transitions, API validation, and demo failure/recovery behavior. V0.2 adds coverage for windowed metrics and pagination. V0.3 adds deployment registration, replacement, correlation, scoped metrics, validation, and pagination tests. V0.4 adds failure/recovery thresholds, interrupted streaks, deployment snapshots, incident APIs, filtering, durations, and incident metrics. PostgreSQL integration tests exercise full lifecycles, concurrent evaluation, database uniqueness, foreign keys, deletion semantics, database aggregation, and staged V1-to-V2-to-V3 migration compatibility. V0.5 adds real HTTP probing of three independent targets with persisted isolated incident lifecycles, plus each demo's delay validation, recovery, and independent state.
+
+By default, the persistence suite starts a disposable PostgreSQL 18 Testcontainers container against the Docker engine available to the JVM. **Docker unavailability fails the suite; no integration tests are silently skipped.** Start Docker first, use Linux containers, and ensure the current Docker context/socket is reachable. Maven does not need the Compose stack running. Docker image builds deliberately use `-DskipTests`; they compile/package but do not substitute for this full test run.
+
+On Windows with a WSL-only Docker engine, run Maven with Java 25 inside that same WSL distribution, or configure a supported Docker connection for the Windows JVM. For example in Ubuntu with Java 25 installed:
+
+```bash
+cd /mnt/c/Users/YOUR_USER/launchguard
+unset LAUNCHGUARD_TEST_DB_URL
+./mvnw clean package
+```
 
 To run the persistence tests without Docker, create a dedicated empty PostgreSQL database with username/password `launchguard` and provide its URL. The tests apply Flyway migrations and create test records. For example, in PowerShell:
 
 ```powershell
 $env:LAUNCHGUARD_TEST_DB_URL = 'jdbc:postgresql://localhost:5432/launchguard_tests'
 .\mvnw.cmd clean package
+Remove-Item Env:LAUNCHGUARD_TEST_DB_URL
 ```
+
+The external mode is preserved for an explicitly selected dedicated test database. Never point it at your lab or production database. It is not a substitute for V0.5's required Testcontainers validation.
 
 ## Database and query design
 
@@ -500,7 +658,20 @@ Health checks capture the current deployment before probing and never update the
 
 V3 adds only the `incidents` table and its indexes; V1 and V2 are unchanged. A partial unique `(service_id)` index applies to OPEN rows, and `(service_id, started_at DESC, id DESC)` supports history and opening-window queries. Composite deployment ownership foreign keys reject cross-service associations. Service deletion cascades to incidents; the deferred deployment foreign key permits that service-history cascade but rejects direct deletion of a deployment referenced by an incident. V3 does not backfill historical incidents or change existing checks/deployments. It is a transactional, forward-only migration; reversals require a reviewed new migration, not edits to applied files.
 
-## V0.4 limitations
+V0.5 adds no schema or SQL changes: V1, V2, and V3 remain unchanged. Compose persists the same PostgreSQL-managed history in a named volume; failure controls affect real HTTP probes, not fabricated database rows.
+
+## Troubleshooting the lab
+
+- `docker` not found / daemon unreachable: install/start Docker with Linux containers, then check `docker --version`, `docker compose version`, and `docker info`. If Docker lives only in WSL, run Compose inside that distribution (`wsl -d Ubuntu -- docker compose up --build` from the repository).
+- Port already allocated: stop the conflicting application or set the matching host port in `.env`. A host PostgreSQL often occupies 5432; use `POSTGRES_PORT=5433`. Keep Docker-internal ports and DNS targets unchanged.
+- Backend starting/unhealthy: inspect `docker compose ps`, `docker compose logs launchguard postgres`, and `curl http://localhost:8080/actuator/health`. PostgreSQL readiness gates startup; schema validation/Flyway errors should be investigated, not fixed by deleting history.
+- Demo unhealthy after failure/slow mode: expected. Call `/admin/recover` and `/admin/normal`, allow health probes/recovery checks to complete, or deliberately restart that demo (its in-memory controls reset).
+- Registered demo stays DOWN with a connection error: confirm its stored URL is Docker DNS for a container backend, or localhost for a host backend. Bootstrap rejects mismatched existing registrations instead of silently changing them.
+- Full restart appears to lose data: check whether `down -v` was used or the Compose project name/directory changed. A different project gets a different default-prefixed named volume.
+- Testcontainers cannot connect: run `docker info` in the same environment as Java, remove an unintended `LAUNCHGUARD_TEST_DB_URL`, and inspect the test error. Do not enable Docker-unavailable test skipping. Initial runs also need registry/Maven network access.
+- PowerShell blocks scripts: follow your organization's execution policy; a one-process `powershell -ExecutionPolicy Bypass -File scripts/register-demo-services.ps1` is a local option if permitted. In PowerShell use `curl.exe`, not the older `curl` alias, for the curl examples.
+
+## V0.5 limitations
 
 - The concurrency guard is local to one backend process, not distributed.
 - Checks run sequentially during each scheduled pass.
@@ -515,11 +686,17 @@ V3 adds only the `incidents` table and its indexes; V1 and V2 are unchanged. A p
 - Deployment registration records the server time; importing historical deployment timestamps is not supported.
 - Checks capture the current deployment before probing. If registration races with an in-flight probe, that check retains the deployment it observed at the start.
 - Health-check history has no retention or archival policy.
-- Registered URLs are trusted operator input; V0.4 does not implement an outbound SSRF allowlist.
+- Registered URLs are trusted operator input; V0.5 does not implement an outbound SSRF allowlist.
 - Local Compose credentials are intentionally unsuitable for production.
+- Demo failures/delays are volatile, reset on restart, and simulate HTTP behavior rather than real business workloads.
+- The lab is a single-host Compose setup, not a deployment platform; images use maintained Java tags rather than immutable digest pins.
+- Artificial delay occupies a demo request thread; high-volume load testing and resource/exhaustion guarantees are outside this milestone.
+- Bootstrap/validation automation is PowerShell-based; other environments can use PowerShell 7 or the documented HTTP/Compose commands.
 
 ## Roadmap
 
 The [V0.4 validation report](docs/v0.4-validation.md) records the implementation decisions, full test results, live incident lifecycle, database checks, and example responses.
 
-V0.4 deliberately stops at automatic incident detection, historical correlation, and read-only incident analytics. A frontend, authentication, external notification delivery, integrations, per-service policies, distributed scheduling, and automated remediation require separate design and scoping in future versions.
+The [V0.5 validation report](docs/v0.5-validation.md) records the Maven/Testcontainers run, four image builds, five-container readiness, multi-service outage/latency scenarios, and persisted history across a full Compose restart.
+
+V0.5 deliberately stops at the containerized multi-service lab. A frontend, authentication, external notification delivery, GitHub integration, per-service policies, distributed infrastructure, automatic rollback, and AI features require separate design and scoping in future versions.

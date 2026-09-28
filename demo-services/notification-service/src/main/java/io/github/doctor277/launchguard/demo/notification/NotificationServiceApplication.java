@@ -1,14 +1,14 @@
-package io.github.doctor277.launchguard.demo.payment;
+package io.github.doctor277.launchguard.demo.notification;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 
-@SpringBootApplication
 @EnableConfigurationProperties(DemoProperties.class)
-public class PaymentServiceApplication {
+@SpringBootApplication
+public class NotificationServiceApplication {
 
     public static void main(String[] args) {
-        SpringApplication.run(PaymentServiceApplication.class, args);
+        SpringApplication.run(NotificationServiceApplication.class, args);
     }
 }
