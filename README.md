@@ -1,6 +1,6 @@
 # LaunchGuard
 
-LaunchGuard is a deployment monitoring and reliability platform in development. Version 0.5 packages the existing monitoring engine, deployment correlation, and automatic incidents into a reproducible five-container reliability lab. Payment, order, and notification demos can fail or slow down independently; LaunchGuard records their history and confirms incidents through consecutive checks.
+LaunchGuard is a deployment monitoring and reliability platform in development. Version 0.6 decouples scheduled monitoring from network probing with Kafka and a separate probe-worker. The seven-container lab preserves deployment correlation, reliability metrics, and automatic incidents while processing independent services concurrently.
 
 > LaunchGuard is currently a portfolio/software engineering project. It is not a production monitoring service and should not be used as the sole source of operational health information.
 
@@ -53,6 +53,16 @@ LaunchGuard is a deployment monitoring and reliability platform in development. 
 - Validate automatic incident isolation, recovery, and persistent history across a full restart.
 - Require the PostgreSQL Testcontainers suite to run by default; missing Docker is an error, not a skip.
 
+## V0.6 capabilities
+
+- Dispatch scheduled probes to Kafka without waiting for HTTP completion.
+- Execute probes in a separate, database-free worker with bounded concurrency.
+- Queue manual probes with HTTP 202 while preserving the synchronous endpoint.
+- Capture deployment IDs at dispatch and correlate results using persistent request IDs.
+- Ignore duplicate results transactionally, including their incident effects.
+- Recover poison records to dead-letter topics using bounded consumer retries.
+- Validate the complete Kafka/HTTP/PostgreSQL path with actual Testcontainers.
+
 ## Architecture
 
 ```mermaid
@@ -62,14 +72,20 @@ flowchart LR
     Developer -->|localhost:8082| Order
     Developer -->|localhost:8083| Notification
     subgraph Compose[Compose default network]
-        Backend[launchguard :8080]
+        Backend[backend :8080]
+        Kafka[Kafka KRaft :9092]
+        Worker[probe-worker :8084]
         Payment[payment-service :8081]
         Order[order-service :8082]
         Notification[notification-service :8083]
         DB[(postgres :5432)]
-        Backend -->|HTTP /health via Docker DNS| Payment
-        Backend -->|HTTP /health via Docker DNS| Order
-        Backend -->|HTTP /health via Docker DNS| Notification
+        Backend -->|HealthCheckRequested| Kafka
+        Kafka -->|requests| Worker
+        Worker -->|HTTP /health via Docker DNS| Payment
+        Worker -->|HTTP /health via Docker DNS| Order
+        Worker -->|HTTP /health via Docker DNS| Notification
+        Worker -->|HealthCheckCompleted| Kafka
+        Kafka -->|results| Backend
         Backend -->|JDBC after database healthy| DB
     end
     DB --> Volume[(Named PostgreSQL volume)]
@@ -78,7 +94,15 @@ flowchart LR
 ```mermaid
 flowchart LR
     Client[API client] -->|REST| API[LaunchGuard controllers]
-    Scheduler[Configurable fixed-delay scheduler] --> Engine[Health-check service]
+    Scheduler[Configurable fixed-delay scheduler] --> Dispatch[Async probe dispatcher]
+    API -->|async manual check| Dispatch
+    Dispatch -->|request + deployment snapshot| Kafka[Kafka]
+    Kafka --> Worker[HTTP probe worker]
+    Worker -->|completed result| Kafka
+    Kafka --> Persist[Transactional result persistence]
+    Persist --> Repositories
+    Persist --> Evaluator
+    Engine[Sync manual health-check service]
     API --> Services[Service management]
     API --> Engine
     API --> Analytics[Metrics and timeline service]
@@ -97,7 +121,7 @@ flowchart LR
     Flyway[Flyway migrations] --> PostgreSQL
 ```
 
-The backend uses a controller/service/repository structure. The HTTP probe owns network behavior and timing; the health-check service atomically persists the result and updates the current service status. An in-process guard prevents overlapping checks of the same service within one backend instance.
+The backend retains its controller/service/repository structure. Scheduled probes now use the dispatcher, Kafka, and the worker. Result persistence atomically writes history, updates current status, and invokes the existing incident evaluator. Direct HTTP probing remains only for the synchronous manual endpoint. The worker has neither database dependencies nor credentials; Compose also places PostgreSQL on a network the worker does not join.
 
 V0.2 adds a metrics service, a database aggregation repository, a dedicated time-window parser, lightweight timeline projections, and an API-owned pagination response. V0.3 adds a deployment service and deployment-specific SQL aggregation. V0.4 adds a dedicated incident evaluator and read-only incident APIs. Controllers return DTOs; JPA entities, Spring `Page` objects, and database projection types do not leak through the REST contract.
 
@@ -131,6 +155,8 @@ launchguard/
 |   |-- src/main/java/
 |   |-- src/main/resources/db/migration/
 |   `-- src/test/java/
+|-- monitoring-events/               Shared versioned JSON contracts and Kafka configuration
+|-- probe-worker/                    Independent Kafka/HTTP worker; no database
 |-- demo-services/
 |   |-- payment-service/             Payment demo (8081)
 |   |-- order-service/               Order demo (8082)
@@ -138,7 +164,7 @@ launchguard/
 |-- scripts/                         Registration and repeatable lab validation
 |-- docs/                            Milestone validation reports
 |-- .mvn/wrapper/                    Maven Wrapper configuration
-|-- docker-compose.yml               Complete five-container reliability lab
+|-- docker-compose.yml               Complete seven-container reliability lab
 |-- .env.example                     Optional Compose overrides
 |-- pom.xml                          Multi-module reactor build
 |-- mvnw / mvnw.cmd
@@ -155,7 +181,7 @@ No global Maven installation is required.
 
 ## Quick start with Docker Compose
 
-Clone your checkout, change into `launchguard`, and start all five containers:
+Clone your checkout, change into `launchguard`, and start all seven containers:
 
 ```bash
 git clone <your-launchguard-repository-url>
@@ -172,6 +198,8 @@ All published ports are bound to host loopback, not all network interfaces:
 - Demo order service: `http://localhost:8082`
 - Demo notification service: `http://localhost:8083`
 - PostgreSQL: `localhost:5432`
+- Kafka host listener: `localhost:9092`
+- Probe-worker health: `http://localhost:8084/actuator/health`
 
 In a second terminal, register all three demos explicitly:
 
@@ -193,7 +221,7 @@ Inspect containers and logs:
 
 ```bash
 docker compose ps
-docker compose logs -f launchguard payment-service order-service notification-service
+docker compose logs -f backend probe-worker kafka payment-service order-service notification-service
 ```
 
 Stop the stack without deleting PostgreSQL data:
@@ -218,19 +246,28 @@ Optional overrides: copy `.env.example` to `.env` and edit it before starting. F
 
 ## Run applications locally
 
-Start only PostgreSQL:
+Start PostgreSQL and Kafka:
 
 ```bash
-docker compose up -d postgres
+docker compose up -d postgres kafka
 ```
 
 In one terminal, start the backend:
 
 ```bash
-./mvnw -pl backend spring-boot:run
+./mvnw -DskipTests package
+java -jar backend/target/launchguard-backend-0.6.0-SNAPSHOT.jar
 ```
 
 On Windows PowerShell or Command Prompt, use `mvnw.cmd` in place of `./mvnw`.
+
+Start the worker in another terminal:
+
+```bash
+java -jar probe-worker/target/probe-worker-0.6.0-SNAPSHOT-exec.jar
+```
+
+For host-run Java processes, Kafka defaults to `localhost:9092`; if its host port changes, set `KAFKA_BOOTSTRAP_SERVERS`. Containers use `kafka:9092` independently of host ports.
 
 Start each demo in its own terminal:
 
@@ -259,17 +296,18 @@ The backend accepts these environment variables:
 | `INCIDENT_FAILURE_THRESHOLD` | `3` | Consecutive DOWN checks required to open an incident |
 | `INCIDENT_RECOVERY_THRESHOLD` | `2` | Consecutive HEALTHY checks required to resolve an incident |
 
-Compose overrides the monitoring interval and initial delay to `5s` for an interactive lab; direct execution retains `30s`. A monitoring pass probes services sequentially, so latency and timeouts extend the effective sampling interval.
+Compose overrides the monitoring interval and initial delay to `5s` for an interactive lab; direct execution retains `30s`. A monitoring pass dispatches requests without waiting for HTTP; services with an asynchronous request still in flight are skipped until completion or expiry.
 
 Each demo accepts `DEMO_SLOW_DELAY_MS` (default `2000`, range 1..30000) as the delay used by `POST /admin/slow` without an argument. Compose maps `PAYMENT_SLOW_DELAY_MS`, `ORDER_SLOW_DELAY_MS`, and `NOTIFICATION_SLOW_DELAY_MS` to the corresponding container. Demos always start healthy with delay disabled; controls are in-memory and reset on application restart.
 
-Hibernate is configured with `ddl-auto: validate`; it never creates the production schema. Flyway applies `V1__create_monitoring_schema.sql`, `V2__add_deployment_tracking.sql`, and `V3__add_incidents.sql` in order. Existing V1/V2 data remains valid after V3.
+Hibernate is configured with `ddl-auto: validate`; it never creates the production schema. Flyway applies V1 monitoring, V2 deployment tracking, V3 incidents, and V4 probe request correlation in order. Existing V1–V3 data remains valid after V4.
 
 ## API
 
 | Method | Path | Result |
 |---|---|---|
-| `GET` | `/actuator/health` | Backend/database container readiness, without details |
+| `GET` | `/actuator/health` | Backend/database/Kafka connectivity health, without details |
+| `POST` | `/api/services/{id}/check/async` | Queue a Kafka probe and return request ID (`202`) |
 | `POST` | `/api/services` | Register a service (`201 Created`) |
 | `GET` | `/api/services` | List registered services |
 | `GET` | `/api/services/{id}` | Get one service |
@@ -616,7 +654,7 @@ Run the complete reactor test suite:
 ./mvnw clean test
 ```
 
-Build all four executable applications in the five-module reactor:
+Build all five executable applications and the shared contracts in the seven-module reactor:
 
 ```bash
 ./mvnw clean package
@@ -642,7 +680,118 @@ $env:LAUNCHGUARD_TEST_DB_URL = 'jdbc:postgresql://localhost:5432/launchguard_tes
 Remove-Item Env:LAUNCHGUARD_TEST_DB_URL
 ```
 
-The external mode is preserved for an explicitly selected dedicated test database. Never point it at your lab or production database. It is not a substitute for V0.5's required Testcontainers validation.
+The external mode is preserved for an explicitly selected dedicated test database. Never point it at your lab or production database. It affects only the original persistence suite: the V0.6 integration suite always starts actual Kafka and PostgreSQL containers, so a full build still requires Docker.
+
+## V0.6 event-driven monitoring
+
+Kafka separates dispatch from HTTP latency; it does not make a slow target faster. The backend schedules a small JSON request, and four bounded worker threads execute network calls independently. Existing metrics and incident APIs continue reading the same PostgreSQL history.
+
+### Topics, contracts, and processing
+
+Applications explicitly create these topics with six partitions and replication factor 1:
+
+- `launchguard.health-check.requests`
+- `launchguard.health-check.results`
+- `launchguard.health-check.requests.dlt`
+- `launchguard.health-check.results.dlt`
+
+Broker auto-creation is disabled. All records use the service UUID string as their Kafka key. The `monitoring-events` module contains records, validation, JSON serialization, topic configuration, retry policy, and broker health checks; it contains no JPA model.
+
+Request schema:
+
+```json
+{
+  "eventVersion": 1,
+  "requestId": "bf90b63e-7e1d-48b7-8d40-5b84bc83fda4",
+  "serviceId": "cf846957-8023-45b8-a1b3-c513c67d598a",
+  "deploymentId": null,
+  "targetUrl": "http://payment-service:8081/health",
+  "requestedAt": "2026-09-28T18:00:00Z",
+  "timeoutMs": 5000
+}
+```
+
+Completion schema:
+
+```json
+{
+  "eventVersion": 1,
+  "requestId": "bf90b63e-7e1d-48b7-8d40-5b84bc83fda4",
+  "serviceId": "cf846957-8023-45b8-a1b3-c513c67d598a",
+  "deploymentId": null,
+  "status": "HEALTHY",
+  "httpStatus": 200,
+  "responseTimeMs": 42,
+  "errorMessage": null,
+  "checkedAt": "2026-09-28T18:00:00.042Z"
+}
+```
+
+Only event version 1 is supported. UUIDs identify one dispatch and its captured service/deployment. Deployment is optional and copied unchanged by the worker. Timestamps are UTC instants; `checkedAt` is probe completion time. Timeout is 1..60000ms. Latency is nonnegative elapsed time measured with a monotonic clock. HTTP 2xx is HEALTHY; non-2xx, timeout, DNS, and connection failures are DOWN. HTTP status is null when the complete response was not obtained; errors are capped at 2048 characters. The worker bounds both headers and response-body completion and discards response bodies.
+
+### Async API
+
+```bash
+curl -i -X POST http://localhost:8080/api/services/SERVICE_ID/check/async
+# HTTP 202
+# {"requestId":"...","serviceId":"...","status":"QUEUED"}
+curl "http://localhost:8080/api/services/SERVICE_ID/checks?size=20"
+# Kafka-generated history includes probeRequestId.
+```
+
+202 means accepted into the Kafka producer, not a durable broker acknowledgement or completed probe. Immediate queue failures return structured 503; an already in-flight asynchronous probe returns 409. Later publication failure is logged and releases the guard. Missing services return 404. No job/status API is added; look up the returned ID in check history. The synchronous `POST /check` remains unchanged and its `probeRequestId` is null.
+
+### Reliability, concurrency, and ordering
+
+Delivery is at-least-once, not exactly-once. The worker acknowledges requests only after result publication succeeds; the backend acknowledges a result after its database transaction commits. Re-delivery may repeat the HTTP GET. Result persistence takes a per-service PostgreSQL row lock, checks the request ID, inserts the result, updates status, and evaluates incidents within one transaction. V4's partial unique index is the durable final duplicate guard. Replays are logged and do not add history or incident transitions. Deleted-service results are safely ignored. Captured deployments must belong to the service.
+
+There is no global ordering. To keep the first six registered services on separate request partitions, dispatch explicitly routes by creation-order ordinal modulo partition count, while retaining `serviceId` as key. Worker results retain that request partition. Affinity is stable while the registry is unchanged; adding later services preserves existing affinity, but deletions can change ordinals. Backend row locking and the `checkedAt` guard handle cross-partition/late arrivals: an older result is stored for metrics without regressing current status or evaluating a new incident. Historical arrivals do not retroactively rebuild incident history. Equal timestamps can still reflect arrival order.
+
+Spring Kafka asynchronous acknowledgements pause a consumer until its current poll's outstanding results complete. Therefore keep consumer concurrency at least the partition count (defaults: six/six), so a slow partition does not pause another service's partition. More services than partitions can share this head-of-line delay. Four probe threads and a 64-task queue bound network work; `max.poll.records=8` bounds each poll. This is independent-service concurrency at local-lab scale, not unlimited isolation under saturation.
+
+The asynchronous in-flight registry is local to one backend. It releases matching request IDs on consumed results, failed publication, or expiry (120s default; cleanup every 5s). An old result cannot unlock a newer request. The synchronous manual endpoint retains its separate existing guard; manually invoking it can overlap asynchronous work. Multiple backend instances, durable scheduling, and distributed locks are outside V0.6.
+
+Transient consumer errors get two retries after the first attempt, 500ms apart. Malformed/unsupported contracts are non-retryable and go directly to the corresponding DLT. DLT publication must succeed before the failed record is recovered; broker outages can therefore defer recovery until Kafka returns. Normal HTTP DOWN results are successful monitoring messages, not DLT failures. DLT records retain raw payload and Spring Kafka exception headers; there is no automatic replay tool or external notification.
+
+Both producers use `acks=all` and idempotent producer retries, with bounded queue/delivery timeouts. These do not provide an outbox or atomic Kafka/database transactions. A backend crash, expired in-flight entry, or failed publication can leave a requested observation missing; later scheduled checks recover monitoring, not that exact observation. Single-broker replication factor 1 is not high availability. Kafka's image supplies anonymous volumes, including `/var/lib/kafka/data`; Compose does not configure durable named Kafka storage. `restart kafka` retains broker state, but `compose down` followed by `up` does not automatically reuse those anonymous volumes. Recreation/volume renewal must not be treated as durable Kafka persistence. PostgreSQL history remains in its named volume.
+
+### Compose and configuration
+
+The seven services are `postgres`, `kafka`, `backend`, `probe-worker`, and the three demos. Kafka uses combined KRaft broker/controller roles without ZooKeeper. Backend startup waits for PostgreSQL and Kafka health; the worker waits only for Kafka. Application images run non-root. Only health is exposed via Actuator, without details. Backend health covers the datasource and broker; worker health covers the broker. This is connectivity readiness, not a guarantee that every consumer is assigned or every record is processed.
+
+Extra environment variables:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `KAFKA_PORT` | `9092` | Compose loopback host listener |
+| `PROBE_WORKER_PORT` | `8084` | Compose loopback worker health port |
+| `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | Host-run backend/worker broker address |
+| `KAFKA_TOPIC_PARTITIONS` | `6` | Explicit topic partition count |
+| `KAFKA_CONSUMER_CONCURRENCY` | `6` | Consumers per application |
+| `PROBE_WORKER_THREADS` | `4` | Maximum simultaneous HTTP probes |
+| `PROBE_WORKER_QUEUE_CAPACITY` | `64` | Bounded executor queue |
+| `PROBE_IN_FLIGHT_TTL` | `120s` | Backend asynchronous guard expiry |
+
+Worker connection timeout uses `PROBE_CONNECT_TIMEOUT` (2s default; Compose forwards `MONITORING_CONNECT_TIMEOUT`). Response timeout is captured from backend `MONITORING_RESPONSE_TIMEOUT` into each event. Changing a topic partition count does not shrink an existing topic. Partition changes/recreation need explicit operational planning.
+
+### Repeatable performance and failure validation
+
+Start the lab with an 8s response timeout for the 5000ms healthy-latency demonstration, then run:
+
+```powershell
+$env:MONITORING_RESPONSE_TIMEOUT = '8s'
+$env:MONITORING_INTERVAL = '1s'
+docker compose up -d --wait
+.\scripts\validate-kafka-lab.ps1
+# WSL-only engine:
+.\scripts\validate-kafka-lab.ps1 -WslDistribution Ubuntu
+```
+
+The script explicitly registers/reuses demos, confirms automatic Kafka-generated history, queues three manual async probes close together, and proves payment/order rows appear while notification's row is still absent. It records dispatch and persistence timings, replaces a deployment during that slow request, verifies capture, stops/restarts order and checks isolated incident resolution, restarts Kafka and requires new healthy correlated results, replays an actual completion twice, and checks the unique row directly in PostgreSQL. It also inspects migrations/index validity, health, non-root users, metrics arithmetic, timeline, and pagination. It changes only the local lab and leaves it running; no data/volumes are deleted.
+
+The full Maven suite includes real Kafka 4.3 and PostgreSQL 18.6 Testcontainers plus a separately started worker context with no datasource. It exercises backend → Kafka → worker → real HTTP server → Kafka → backend → PostgreSQL; it also tests poison/DLT handling, duplicate incident effects, deletion races, historical results, and concurrent duplicate persistence. Docker unavailability is a failure, never a silently skipped suite.
+
+See the [V0.6 validation report](docs/v0.6-validation.md) for actual results and timings.
 
 ## Database and query design
 
@@ -660,21 +809,25 @@ V3 adds only the `incidents` table and its indexes; V1 and V2 are unchanged. A p
 
 V0.5 adds no schema or SQL changes: V1, V2, and V3 remain unchanged. Compose persists the same PostgreSQL-managed history in a named volume; failure controls affect real HTTP probes, not fabricated database rows.
 
+V4 adds nullable `health_checks.probe_request_id` and a unique partial index over non-null IDs, without rewriting V1–V3 or backfilling legacy history. The index is built concurrently using Flyway's non-transactional script metadata and session-level PostgreSQL advisory locking (`spring.flyway.postgresql.transactional-lock=false`); transaction-level locking would block the concurrent index. Column addition still takes a brief schema lock. A failed non-transactional migration can leave partial changes/an invalid index: inspect database state and use a reviewed recovery plan rather than automatic repair/drop. Rollback is forward-only through a separately reviewed new migration.
+
+Metrics remain database aggregates and history remains paginated. Async dispatch adds one indexed service/deployment lookup and a creation-order count query for partition routing. The count is appropriate for this small registry, not an optimized large-scale scheduler. Result processing adds a service row lock and an indexed request-ID existence check; the incident evaluator continues querying only bounded recent history.
+
 ## Troubleshooting the lab
 
 - `docker` not found / daemon unreachable: install/start Docker with Linux containers, then check `docker --version`, `docker compose version`, and `docker info`. If Docker lives only in WSL, run Compose inside that distribution (`wsl -d Ubuntu -- docker compose up --build` from the repository).
 - Port already allocated: stop the conflicting application or set the matching host port in `.env`. A host PostgreSQL often occupies 5432; use `POSTGRES_PORT=5433`. Keep Docker-internal ports and DNS targets unchanged.
-- Backend starting/unhealthy: inspect `docker compose ps`, `docker compose logs launchguard postgres`, and `curl http://localhost:8080/actuator/health`. PostgreSQL readiness gates startup; schema validation/Flyway errors should be investigated, not fixed by deleting history.
+- Backend starting/unhealthy: inspect `docker compose ps`, `docker compose logs backend probe-worker kafka postgres`, and `curl http://localhost:8080/actuator/health`. PostgreSQL/Kafka readiness gates startup; schema validation/Flyway errors should be investigated, not fixed by deleting history.
 - Demo unhealthy after failure/slow mode: expected. Call `/admin/recover` and `/admin/normal`, allow health probes/recovery checks to complete, or deliberately restart that demo (its in-memory controls reset).
 - Registered demo stays DOWN with a connection error: confirm its stored URL is Docker DNS for a container backend, or localhost for a host backend. Bootstrap rejects mismatched existing registrations instead of silently changing them.
 - Full restart appears to lose data: check whether `down -v` was used or the Compose project name/directory changed. A different project gets a different default-prefixed named volume.
 - Testcontainers cannot connect: run `docker info` in the same environment as Java, remove an unintended `LAUNCHGUARD_TEST_DB_URL`, and inspect the test error. Do not enable Docker-unavailable test skipping. Initial runs also need registry/Maven network access.
 - PowerShell blocks scripts: follow your organization's execution policy; a one-process `powershell -ExecutionPolicy Bypass -File scripts/register-demo-services.ps1` is a local option if permitted. In PowerShell use `curl.exe`, not the older `curl` alias, for the curl examples.
 
-## V0.5 limitations
+## Current limitations
 
 - The concurrency guard is local to one backend process, not distributed.
-- Checks run sequentially during each scheduled pass.
+- Probe concurrency is bounded, not unlimited. Four simultaneous slow probes can occupy all default worker threads.
 - No authentication, authorization, TLS policy management, or tenant isolation.
 - Incidents are detected from sampled checks, not continuous observation or application telemetry; durations begin at confirmation, not the first failure.
 - No external notifications, alert delivery, GitHub integration, automatic rollback, or AI functionality.
@@ -689,7 +842,7 @@ V0.5 adds no schema or SQL changes: V1, V2, and V3 remain unchanged. Compose per
 - Registered URLs are trusted operator input; V0.5 does not implement an outbound SSRF allowlist.
 - Local Compose credentials are intentionally unsuitable for production.
 - Demo failures/delays are volatile, reset on restart, and simulate HTTP behavior rather than real business workloads.
-- The lab is a single-host Compose setup, not a deployment platform; images use maintained Java tags rather than immutable digest pins.
+- The lab is a single-host Compose setup, not a deployment platform. Java and Kafka images are pinned by digest; PostgreSQL uses a specific version tag.
 - Artificial delay occupies a demo request thread; high-volume load testing and resource/exhaustion guarantees are outside this milestone.
 - Bootstrap/validation automation is PowerShell-based; other environments can use PowerShell 7 or the documented HTTP/Compose commands.
 
@@ -699,4 +852,4 @@ The [V0.4 validation report](docs/v0.4-validation.md) records the implementation
 
 The [V0.5 validation report](docs/v0.5-validation.md) records the Maven/Testcontainers run, four image builds, five-container readiness, multi-service outage/latency scenarios, and persisted history across a full Compose restart.
 
-V0.5 deliberately stops at the containerized multi-service lab. A frontend, authentication, external notification delivery, GitHub integration, per-service policies, distributed infrastructure, automatic rollback, and AI features require separate design and scoping in future versions.
+V0.6 deliberately stops at event-driven health monitoring. A frontend, authentication, external notification delivery, GitHub integration, per-service policies, distributed infrastructure, automatic rollback, and AI features require separate design and scoping in future versions.

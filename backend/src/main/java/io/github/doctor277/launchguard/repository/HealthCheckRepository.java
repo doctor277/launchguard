@@ -10,6 +10,8 @@ import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface HealthCheckRepository extends JpaRepository<HealthCheck, UUID> {
 
+    boolean existsByProbeRequestId(UUID probeRequestId);
+
     Page<HealthCheck> findAllByServiceId(UUID serviceId, Pageable pageable);
 
     List<HealthCheckTimelineView> findAllByServiceIdOrderByCheckedAtAsc(UUID serviceId);

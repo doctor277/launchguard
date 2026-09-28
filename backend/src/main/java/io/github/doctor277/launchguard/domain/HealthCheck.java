@@ -20,6 +20,9 @@ public class HealthCheck {
     @Id
     private UUID id;
 
+    @Column(name = "probe_request_id", updatable = false)
+    private UUID probeRequestId;
+
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "service_id", nullable = false,
             foreignKey = @ForeignKey(name = "fk_health_checks_service"))
@@ -77,6 +80,17 @@ public class HealthCheck {
 
     public UUID getId() {
         return id;
+    }
+
+    public static HealthCheck recordProbe(MonitoredService service, Deployment deployment, ServiceStatus status,
+            Integer httpStatus, long responseTimeMs, String errorMessage, Instant checkedAt, UUID requestId) {
+        HealthCheck check = record(service, deployment, status, httpStatus, responseTimeMs, errorMessage, checkedAt);
+        check.probeRequestId = java.util.Objects.requireNonNull(requestId, "requestId");
+        return check;
+    }
+
+    public UUID getProbeRequestId() {
+        return probeRequestId;
     }
 
     public MonitoredService getService() {

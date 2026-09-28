@@ -6,6 +6,9 @@ import java.util.UUID;
 import java.util.Optional;
 import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+import java.time.Instant;
 
 public interface MonitoredServiceRepository extends JpaRepository<MonitoredService, UUID> {
 
@@ -17,4 +20,7 @@ public interface MonitoredServiceRepository extends JpaRepository<MonitoredServi
     List<MonitoredService> findAllByOrderByCreatedAtAsc();
 
     boolean existsByNameIgnoreCase(String name);
+
+    @Query(value = "SELECT COUNT(*) FROM monitored_services WHERE (created_at, id) < (:createdAt, :id)", nativeQuery = true)
+    long countPreceding(@Param("createdAt") Instant createdAt, @Param("id") UUID id);
 }

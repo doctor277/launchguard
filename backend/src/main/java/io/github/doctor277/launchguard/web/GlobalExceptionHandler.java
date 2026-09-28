@@ -23,6 +23,11 @@ public class GlobalExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
+    @ExceptionHandler(io.github.doctor277.launchguard.messaging.ProbeDispatchException.class)
+    ResponseEntity<ApiError> handleDispatchUnavailable(RuntimeException exception, HttpServletRequest request) {
+        return error(HttpStatus.SERVICE_UNAVAILABLE, exception.getMessage(), request, List.of());
+    }
+
     @ExceptionHandler({ServiceNotFoundException.class, DeploymentNotFoundException.class, IncidentNotFoundException.class})
     ResponseEntity<ApiError> handleNotFound(RuntimeException exception, HttpServletRequest request) {
         return error(HttpStatus.NOT_FOUND, exception.getMessage(), request, List.of());

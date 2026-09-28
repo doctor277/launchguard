@@ -13,12 +13,14 @@ public record HealthCheckResponse(
         Integer httpStatus,
         long responseTimeMs,
         String errorMessage,
-        Instant checkedAt) {
+        Instant checkedAt,
+        UUID probeRequestId) {
 
     public static HealthCheckResponse from(HealthCheck check) {
         var deployment = check.getDeployment();
         return new HealthCheckResponse(check.getId(), check.getService().getId(),
                 deployment == null ? null : deployment.getId(), check.getStatus(),
-                check.getHttpStatus(), check.getResponseTimeMs(), check.getErrorMessage(), check.getCheckedAt());
+                check.getHttpStatus(), check.getResponseTimeMs(), check.getErrorMessage(), check.getCheckedAt(),
+                check.getProbeRequestId());
     }
 }

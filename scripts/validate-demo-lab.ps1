@@ -26,7 +26,9 @@ $composeEnvironment = @()
 foreach ($key in @('POSTGRES_PORT', 'LAUNCHGUARD_PORT', 'PAYMENT_PORT', 'ORDER_PORT', 'NOTIFICATION_PORT',
     'MONITORING_INTERVAL', 'MONITORING_INITIAL_DELAY', 'MONITORING_CONNECT_TIMEOUT', 'MONITORING_RESPONSE_TIMEOUT',
     'INCIDENT_FAILURE_THRESHOLD', 'INCIDENT_RECOVERY_THRESHOLD', 'PAYMENT_SLOW_DELAY_MS', 'ORDER_SLOW_DELAY_MS',
-    'NOTIFICATION_SLOW_DELAY_MS', 'COMPOSE_PROJECT_NAME')) {
+    'NOTIFICATION_SLOW_DELAY_MS', 'COMPOSE_PROJECT_NAME', 'KAFKA_PORT', 'PROBE_WORKER_PORT',
+    'KAFKA_TOPIC_PARTITIONS', 'KAFKA_CONSUMER_CONCURRENCY', 'PROBE_WORKER_THREADS',
+    'PROBE_WORKER_QUEUE_CAPACITY', 'PROBE_IN_FLIGHT_TTL')) {
     $value = [Environment]::GetEnvironmentVariable($key)
     if ($null -ne $value) { $composeEnvironment += "$key=$value" }
 }
@@ -190,8 +192,8 @@ if (@($before.services).Count -ne @($after.services).Count) { throw 'Restart ins
 $persistedOrder = Get-LabApi "/api/services/$($ids['order-service'])/incidents/$($resolvedOrder.id)"
 if ($persistedOrder.resolvedAt -ne $resolvedOrder.resolvedAt) { throw 'Resolved incident changed after restart.' }
 
-Write-Host 'Verify all five containers healthy and all four applications non-root.'
-foreach ($name in @('postgres', 'launchguard', 'payment-service', 'order-service', 'notification-service')) {
+Write-Host 'Verify all seven containers healthy and application runtimes non-root.'
+foreach ($name in @('postgres', 'kafka', 'backend', 'probe-worker', 'payment-service', 'order-service', 'notification-service')) {
     $containerId = (Invoke-LabDocker -DockerArguments @('compose', 'ps', '-q', $name) -join '').Trim()
     if (-not $containerId) { throw "$name is not running." }
     $health = (Invoke-LabDocker -DockerArguments @('inspect', '--format', '{{.State.Health.Status}}', $containerId) -join '').Trim()

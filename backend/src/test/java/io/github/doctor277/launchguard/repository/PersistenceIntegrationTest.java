@@ -42,7 +42,9 @@ import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.containers.PostgreSQLContainer;
 
 @SpringBootTest
-@TestPropertySource(properties = "launchguard.monitoring.initial-delay=24h")
+@TestPropertySource(properties = {"launchguard.monitoring.initial-delay=24h",
+        "spring.kafka.listener.auto-startup=false", "spring.kafka.admin.auto-create=false",
+        "launchguard.kafka.health-enabled=false"})
 class PersistenceIntegrationTest {
 
     private static final String EXTERNAL_DB_URL = System.getenv("LAUNCHGUARD_TEST_DB_URL");
@@ -338,9 +340,10 @@ class PersistenceIntegrationTest {
     }
 
     @Test
-    void upgradesV1ToV2ToV3WithoutChangingLegacyHistory() {
+    void upgradesV1ToV2ToV3ToV4WithoutChangingLegacyHistory() {
         String schema = "migration_" + UUID.randomUUID().toString().replace("-", "");
-        var configuration = Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema);
+        var configuration = Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema)
+                .configuration(java.util.Map.of("flyway.postgresql.transactional.lock", "false"));
         configuration.target("1").load().migrate();
         UUID serviceId = UUID.randomUUID();
         UUID checkId = UUID.randomUUID();
@@ -360,6 +363,7 @@ class PersistenceIntegrationTest {
         jdbcClient.sql("UPDATE " + schema + ".monitored_services SET current_deployment_id=:deployment WHERE id=:id")
                 .param("deployment", deploymentId).param("id", serviceId).update();
         configuration.target("3").load().migrate();
+        configuration.target("4").load().migrate();
 
         assertThat(jdbcClient.sql("SELECT response_time_ms FROM " + schema + ".health_checks WHERE id=:id")
                 .param("id", checkId).query(Long.class).single()).isEqualTo(42);
@@ -369,7 +373,9 @@ class PersistenceIntegrationTest {
                 .param("id", serviceId).query(UUID.class).single()).isEqualTo(deploymentId);
         assertThat(jdbcClient.sql("SELECT COUNT(*) FROM " + schema + ".incidents").query(Long.class).single()).isZero();
         assertThat(jdbcClient.sql("SELECT COUNT(*) FROM " + schema + ".flyway_schema_history WHERE success AND version IS NOT NULL")
-                .query(Long.class).single()).isEqualTo(3);
+                .query(Long.class).single()).isEqualTo(4);
+        assertThat(jdbcClient.sql("SELECT COUNT(*) FROM " + schema + ".health_checks WHERE probe_request_id IS NULL")
+                .query(Long.class).single()).isEqualTo(1);
     }
 
     private HealthCheck persistAndEvaluate(MonitoredService service, ServiceStatus status, Instant checkedAt) {

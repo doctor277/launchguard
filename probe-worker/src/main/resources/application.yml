@@ -1,0 +1,45 @@
+spring:
+  application:
+    name: probe-worker
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    admin:
+      fail-fast: true
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+      properties:
+        enable.idempotence: true
+        max.block.ms: 500
+        delivery.timeout.ms: 10000
+        request.timeout.ms: 5000
+    consumer:
+      enable-auto-commit: false
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      properties:
+        max.poll.records: 8
+        max.poll.interval.ms: 300000
+    listener:
+      ack-mode: record
+      concurrency: ${KAFKA_CONSUMER_CONCURRENCY:6}
+
+server:
+  port: ${SERVER_PORT:8084}
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+launchguard:
+  kafka:
+    partitions: ${KAFKA_TOPIC_PARTITIONS:6}
+  worker:
+    threads: ${PROBE_WORKER_THREADS:4}
+    queue-capacity: ${PROBE_WORKER_QUEUE_CAPACITY:64}
+    connect-timeout: ${MONITORING_CONNECT_TIMEOUT:2s}

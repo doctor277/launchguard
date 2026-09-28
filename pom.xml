@@ -12,12 +12,14 @@
 
     <groupId>io.github.doctor277.launchguard</groupId>
     <artifactId>launchguard-parent</artifactId>
-    <version>0.5.0-SNAPSHOT</version>
+    <version>0.6.0-SNAPSHOT</version>
     <packaging>pom</packaging>
     <name>LaunchGuard</name>
     <description>Service health monitoring platform</description>
 
     <modules>
+        <module>monitoring-events</module>
+        <module>probe-worker</module>
         <module>backend</module>
         <module>demo-services/payment-service</module>
         <module>demo-services/order-service</module>
