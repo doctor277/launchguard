@@ -1,6 +1,6 @@
 # LaunchGuard
 
-LaunchGuard is a deployment monitoring and reliability platform in development. Version 0.3 adds deployment tracking to service health checks and reliability history. A service can be monitored before any deployment is registered; once a deployment is current, new checks retain its ID even after a later deployment replaces it.
+LaunchGuard is a deployment monitoring and reliability platform in development. Version 0.4 adds automatic incident detection to service health checks, reliability history, and deployment correlation. Repeated failed checks open an incident; repeated successful checks resolve it. Earlier checks and resolved incidents retain their original deployment associations.
 
 > LaunchGuard is currently a portfolio/software engineering project. It is not a production monitoring service and should not be used as the sole source of operational health information.
 
@@ -32,6 +32,16 @@ LaunchGuard is a deployment monitoring and reliability platform in development. 
 - Calculate deployment-specific availability, latency statistics, first failure, and last check in PostgreSQL.
 - Show basic current deployment information in service responses and `deploymentId` in check responses.
 
+## V0.4 capabilities
+
+- Automatically open an incident after 3 consecutive failed checks by default.
+- Automatically resolve it after 2 consecutive healthy checks; a failure resets recovery progress.
+- Configure both thresholds through application properties or environment variables.
+- Preserve the deployment current at incident opening, independently of later deployments.
+- Enforce one OPEN incident per service in PostgreSQL.
+- Read paginated/filterable incident history, current incidents, and windowed incident metrics.
+- Expose `hasOpenIncident` in service responses without embedding incident history.
+
 ## Architecture
 
 ```mermaid
@@ -42,11 +52,15 @@ flowchart LR
     API --> Engine
     API --> Analytics[Metrics and timeline service]
     API --> Deployments[Deployment service]
+    API --> Incidents[Incident history and metrics service]
+    Engine -->|after persisted check| Evaluator[Incident evaluator]
     Services --> Repositories[Spring Data repositories]
     Engine --> Probe[HTTP health probe]
     Engine --> Repositories
     Analytics -->|aggregate SQL and projections| Repositories
     Deployments -->|current deployment and scoped metrics| Repositories
+    Incidents -->|pagination and aggregate SQL| Repositories
+    Evaluator -->|bounded recent checks and row lock| Repositories
     Probe --> Payment[Demo payment service]
     Repositories --> PostgreSQL[(PostgreSQL 18)]
     Flyway[Flyway migrations] --> PostgreSQL
@@ -54,7 +68,7 @@ flowchart LR
 
 The backend uses a controller/service/repository structure. The HTTP probe owns network behavior and timing; the health-check service atomically persists the result and updates the current service status. An in-process guard prevents overlapping checks of the same service within one backend instance.
 
-V0.2 adds a metrics service, a database aggregation repository, a dedicated time-window parser, lightweight timeline projections, and an API-owned pagination response. V0.3 adds a deployment service and deployment-specific SQL aggregation. Controllers return DTOs; JPA entities, Spring `Page` objects, and database projection types do not leak through the REST contract.
+V0.2 adds a metrics service, a database aggregation repository, a dedicated time-window parser, lightweight timeline projections, and an API-owned pagination response. V0.3 adds a deployment service and deployment-specific SQL aggregation. V0.4 adds a dedicated incident evaluator and read-only incident APIs. Controllers return DTOs; JPA entities, Spring `Page` objects, and database projection types do not leak through the REST contract.
 
 ```mermaid
 flowchart LR
@@ -182,8 +196,10 @@ The backend accepts these environment variables:
 | `MONITORING_INITIAL_DELAY` | `30s` | Delay before the first scheduled pass |
 | `MONITORING_CONNECT_TIMEOUT` | `2s` | HTTP connection timeout |
 | `MONITORING_RESPONSE_TIMEOUT` | `5s` | HTTP response timeout |
+| `INCIDENT_FAILURE_THRESHOLD` | `3` | Consecutive DOWN checks required to open an incident |
+| `INCIDENT_RECOVERY_THRESHOLD` | `2` | Consecutive HEALTHY checks required to resolve an incident |
 
-Hibernate is configured with `ddl-auto: validate`; it never creates the production schema. Flyway applies `V1__create_monitoring_schema.sql` and `V2__add_deployment_tracking.sql` in order. Existing V1 data remains valid after V2.
+Hibernate is configured with `ddl-auto: validate`; it never creates the production schema. Flyway applies `V1__create_monitoring_schema.sql`, `V2__add_deployment_tracking.sql`, and `V3__add_incidents.sql` in order. Existing V1/V2 data remains valid after V3.
 
 ## API
 
@@ -201,6 +217,10 @@ Hibernate is configured with `ddl-auto: validate`; it never creates the producti
 | `GET` | `/api/services/{id}/deployments?page=0&size=20` | Paginated deployments, newest first |
 | `GET` | `/api/services/{id}/deployments/{deploymentId}` | Deployment details and current flag |
 | `GET` | `/api/services/{id}/deployments/{deploymentId}/metrics` | Reliability for checks linked to that deployment |
+| `GET` | `/api/services/{id}/incidents?page=0&size=20` | Newest-first incident history; optional `status` filter |
+| `GET` | `/api/services/{id}/incidents/{incidentId}` | One incident, deployment summary, and duration |
+| `GET` | `/api/services/{id}/incidents/current` | Current OPEN incident, or `204 No Content` |
+| `GET` | `/api/services/{id}/incident-metrics?window=30d` | Windowed incident counts and duration statistics |
 
 ### Register and inspect a service
 
@@ -331,6 +351,61 @@ Example deployment metrics response:
 
 Deployment metrics include only checks whose `deploymentId` matches that deployment. A deployment with no checks reports zero counts, `0.00` availability, and `null` latency and check timestamps. A deployment ID used under another service returns `404`.
 
+## Automatic incidents
+
+An incident is a confirmed unhealthy period, not a single failed check. With the default thresholds, `DOWN, DOWN, DOWN` opens one incident. Additional failures keep that same incident open. `HEALTHY, HEALTHY` resolves it; `HEALTHY, DOWN` resets recovery, so two new consecutive healthy checks are required. A later outage creates a new incident without modifying the resolved record.
+
+```mermaid
+stateDiagram-v2
+    [*] --> NoOpenIncident
+    NoOpenIncident --> NoOpenIncident: Below failure threshold or interrupted streak
+    NoOpenIncident --> OPEN: Failure threshold reached
+    OPEN --> OPEN: Failure or incomplete recovery
+    OPEN --> RESOLVED: Recovery threshold reached
+    RESOLVED --> NoOpenIncident: Historical record retained
+```
+
+Configure `launchguard.incidents.failure-threshold` and `launchguard.incidents.recovery-threshold` (or the environment variables above). Both must be integers from 1 through 1000; invalid configuration fails application startup. Detection reads at most the applicable threshold's recent check projections using the existing service/time index. It does not load an entire history or keep restart-sensitive counters in memory.
+
+The evaluator runs after the check is flushed, in the same transaction as the check and service status update. A service-row `FOR NO KEY UPDATE` lock serializes evaluation while remaining compatible with the parent-key locks acquired by check inserts; a partial unique index independently enforces at most one OPEN incident. `startedAt` is the threshold-reaching check time, not the first failed check time. `resolvedAt` is the final recovery check time. The incident captures the deployment current when evaluation opens it; an in-flight check can retain its earlier deployment while the new incident captures a newer deployment registered during its probe. No deployment is required.
+
+Incident deployment, start, reason, and creation fields cannot be updated through the entity. The only lifecycle transition is OPEN to RESOLVED; a resolved incident cannot be resolved again. No incident mutation or manual-resolution API is exposed.
+
+```bash
+curl "http://localhost:8080/api/services/SERVICE_ID/incidents?page=0&size=20"
+curl "http://localhost:8080/api/services/SERVICE_ID/incidents?status=OPEN"
+curl "http://localhost:8080/api/services/SERVICE_ID/incidents?status=RESOLVED"
+curl http://localhost:8080/api/services/SERVICE_ID/incidents/INCIDENT_ID
+curl http://localhost:8080/api/services/SERVICE_ID/incidents/current
+```
+
+History uses zero-based pages, default size 20, and maximum size 100. Status filters are case-insensitive; invalid filters return structured `400` errors. Missing services and incident IDs used under the wrong service return `404`. When no OPEN incident exists, `/incidents/current` returns `204` with no body. Service responses include a boolean `hasOpenIncident` indicator, including when a service is HEALTHY but has not yet reached its recovery threshold.
+
+Incident DTOs include `id`, `serviceId`, `serviceName`, `status`, an optional `{id, version, commitSha}` deployment summary, `triggerReason`, `startedAt`, `resolvedAt`, and `durationSeconds`. For OPEN incidents, `resolvedAt` and `durationSeconds` are null. For RESOLVED incidents, duration is elapsed time between start and resolution, truncated to whole seconds.
+
+### Incident metrics
+
+```bash
+curl "http://localhost:8080/api/services/SERVICE_ID/incident-metrics?window=30d"
+curl "http://localhost:8080/api/services/SERVICE_ID/incident-metrics?window=all"
+```
+
+The default window is `30d`; the existing `1h`, `24h`, `7d`, `30d`, and `all` values are supported. Windows select incidents whose `startedAt` is on or after the cutoff; incidents opened before the cutoff are excluded even if still OPEN. Database aggregation calculates counts, average resolution time for RESOLVED incidents only (rounded to two decimals), and the longest duration among both resolved and ongoing incidents (whole seconds, using request time for ongoing incidents).
+
+```json
+{
+  "serviceId": "8d22722d-a1e0-49cb-a4b5-f033825a9811",
+  "window": "30d",
+  "totalIncidents": 4,
+  "resolvedIncidents": 3,
+  "openIncidents": 1,
+  "averageResolutionTimeSeconds": 218.50,
+  "longestIncidentSeconds": 512
+}
+```
+
+Empty windows report zero counts and null duration statistics. An all-open selection has a null average resolution time.
+
 ## Demo failure and recovery
 
 The payment service starts healthy:
@@ -358,6 +433,36 @@ curl -X POST http://localhost:8080/api/services/SERVICE_ID/check
 
 LaunchGuard records a new `HEALTHY` result without removing the earlier history. Query `/metrics`, `/metrics/timeline`, or `/checks` to inspect the resulting reliability data.
 
+### V0.4 incident lifecycle demo
+
+Register the service and deployment v1.0.0 using the examples above, then generate a healthy check. With the default thresholds:
+
+```bash
+curl -X POST http://localhost:8081/admin/fail
+curl -X POST http://localhost:8080/api/services/SERVICE_ID/check
+curl -i http://localhost:8080/api/services/SERVICE_ID/incidents/current
+# 204: only one failure
+curl -X POST http://localhost:8080/api/services/SERVICE_ID/check
+curl -i http://localhost:8080/api/services/SERVICE_ID/incidents/current
+# 204: only two failures
+curl -X POST http://localhost:8080/api/services/SERVICE_ID/check
+curl http://localhost:8080/api/services/SERVICE_ID/incidents/current
+# OPEN, associated with v1.0.0
+curl -X POST http://localhost:8080/api/services/SERVICE_ID/check
+# Additional failure does not duplicate the incident
+curl -X POST http://localhost:8081/admin/recover
+curl -X POST http://localhost:8080/api/services/SERVICE_ID/check
+curl http://localhost:8080/api/services/SERVICE_ID/incidents/current
+# Still OPEN after one healthy check
+curl -X POST http://localhost:8080/api/services/SERVICE_ID/check
+curl -i http://localhost:8080/api/services/SERVICE_ID/incidents/current
+# 204: resolved after two healthy checks
+curl "http://localhost:8080/api/services/SERVICE_ID/incidents?status=RESOLVED"
+curl http://localhost:8080/api/services/SERVICE_ID/incident-metrics
+```
+
+Repeat failure mode and three failed checks to create a second incident. Registering v1.1.0 while an incident is OPEN changes future checks but not that incident's deployment. The same detection and recovery behavior works for a service with no registered deployment.
+
 ## Tests and build
 
 Run the complete reactor test suite:
@@ -372,7 +477,7 @@ Build both executable applications:
 ./mvnw clean package
 ```
 
-Unit tests cover the V0.1 probing, persistence, transitions, API validation, and demo failure/recovery behavior. V0.2 adds coverage for windowed metrics and pagination. V0.3 adds deployment registration, replacement, correlation, scoped metrics, validation, and pagination tests. PostgreSQL integration tests cover persistence, migration-backed constraints, aggregation, and concurrent deployment/status updates. They use Testcontainers when Docker is available and skip when neither Docker nor an external test database is configured.
+Unit tests cover the V0.1 probing, persistence, transitions, API validation, and demo failure/recovery behavior. V0.2 adds coverage for windowed metrics and pagination. V0.3 adds deployment registration, replacement, correlation, scoped metrics, validation, and pagination tests. V0.4 adds failure/recovery thresholds, interrupted streaks, deployment snapshots, incident APIs, filtering, durations, and incident metrics. PostgreSQL integration tests exercise full lifecycles, concurrent evaluation, database uniqueness, foreign keys, deletion semantics, database aggregation, and staged V1-to-V2-to-V3 migration compatibility. They use Testcontainers when Docker is available and skip when neither Docker nor an external test database is configured.
 
 To run the persistence tests without Docker, create a dedicated empty PostgreSQL database with username/password `launchguard` and provide its URL. The tests apply Flyway migrations and create test records. For example, in PowerShell:
 
@@ -393,20 +498,28 @@ V2 is a transactional, forward-only migration intended for this development-scal
 
 Health checks capture the current deployment before probing and never update their stored deployment link. Service updates write only changed columns, so a health check finishing during deployment registration cannot overwrite the newly registered current deployment.
 
-## V0.3 limitations
+V3 adds only the `incidents` table and its indexes; V1 and V2 are unchanged. A partial unique `(service_id)` index applies to OPEN rows, and `(service_id, started_at DESC, id DESC)` supports history and opening-window queries. Composite deployment ownership foreign keys reject cross-service associations. Service deletion cascades to incidents; the deferred deployment foreign key permits that service-history cascade but rejects direct deletion of a deployment referenced by an incident. V3 does not backfill historical incidents or change existing checks/deployments. It is a transactional, forward-only migration; reversals require a reviewed new migration, not edits to applied files.
+
+## V0.4 limitations
 
 - The concurrency guard is local to one backend process, not distributed.
 - Checks run sequentially during each scheduled pass.
 - No authentication, authorization, TLS policy management, or tenant isolation.
-- No alerting, incidents, notification delivery, GitHub integration, or automatic rollback.
+- Incidents are detected from sampled checks, not continuous observation or application telemetry; durations begin at confirmation, not the first failure.
+- No external notifications, alert delivery, GitHub integration, automatic rollback, or AI functionality.
+- Incident thresholds are global, not configurable per service; changing them affects the next evaluation of persisted recent history.
+- No distributed scheduling infrastructure or support guarantee for multiple monitoring instances. Database locking and uniqueness protect incident transitions, but the check guard remains process-local.
+- Historical failures before V0.4 are not backfilled into incidents; they can contribute to a streak evaluated by a new check.
 - No dashboard or frontend.
 - Timeline results are raw and unpaginated; long `all` windows can produce a large response.
 - Deployment registration records the server time; importing historical deployment timestamps is not supported.
 - Checks capture the current deployment before probing. If registration races with an in-flight probe, that check retains the deployment it observed at the start.
 - Health-check history has no retention or archival policy.
-- Registered URLs are trusted operator input; V0.3 does not implement an outbound SSRF allowlist.
+- Registered URLs are trusted operator input; V0.4 does not implement an outbound SSRF allowlist.
 - Local Compose credentials are intentionally unsuitable for production.
 
 ## Roadmap
 
-V0.3 deliberately stops at deployment tracking and health correlation. Potential capabilities such as a frontend, alerting, incident management, authentication, integrations, distributed scheduling, and automated remediation require separate design and scoping in future versions.
+The [V0.4 validation report](docs/v0.4-validation.md) records the implementation decisions, full test results, live incident lifecycle, database checks, and example responses.
+
+V0.4 deliberately stops at automatic incident detection, historical correlation, and read-only incident analytics. A frontend, authentication, external notification delivery, integrations, per-service policies, distributed scheduling, and automated remediation require separate design and scoping in future versions.

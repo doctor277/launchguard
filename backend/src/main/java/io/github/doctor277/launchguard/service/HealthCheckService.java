@@ -25,16 +25,18 @@ public class HealthCheckService {
     private final HealthCheckRepository healthCheckRepository;
     private final HealthProbe healthProbe;
     private final Clock clock;
+    private final IncidentEvaluator incidentEvaluator;
     private final Set<UUID> checksInProgress = ConcurrentHashMap.newKeySet();
 
     public HealthCheckService(MonitoredServiceRepository serviceRepository,
                               HealthCheckRepository healthCheckRepository,
                               HealthProbe healthProbe,
-                              Clock clock) {
+                              Clock clock, IncidentEvaluator incidentEvaluator) {
         this.serviceRepository = serviceRepository;
         this.healthCheckRepository = healthCheckRepository;
         this.healthProbe = healthProbe;
         this.clock = clock;
+        this.incidentEvaluator = incidentEvaluator;
     }
 
     @Transactional
@@ -55,6 +57,8 @@ public class HealthCheckService {
             healthCheckRepository.save(healthCheck);
             service.recordStatus(result.status(), checkedAt);
             serviceRepository.save(service);
+            healthCheckRepository.flush();
+            incidentEvaluator.evaluate(healthCheck);
             return HealthCheckResponse.from(healthCheck);
         } finally {
             checksInProgress.remove(serviceId);

@@ -14,13 +14,18 @@ public record ServiceResponse(
         Instant lastCheckedAt,
         Instant createdAt,
         Instant updatedAt,
-        CurrentDeploymentResponse currentDeployment) {
+        CurrentDeploymentResponse currentDeployment,
+        boolean hasOpenIncident) {
 
     public static ServiceResponse from(MonitoredService service) {
+        return from(service, false);
+    }
+
+    public static ServiceResponse from(MonitoredService service, boolean hasOpenIncident) {
         var deployment = service.getCurrentDeployment();
         return new ServiceResponse(service.getId(), service.getName(), service.getBaseUrl(),
                 service.getHealthPath(), service.getStatus(), service.getLastCheckedAt(),
                 service.getCreatedAt(), service.getUpdatedAt(),
-                deployment == null ? null : CurrentDeploymentResponse.from(deployment));
+                deployment == null ? null : CurrentDeploymentResponse.from(deployment), hasOpenIncident);
     }
 }

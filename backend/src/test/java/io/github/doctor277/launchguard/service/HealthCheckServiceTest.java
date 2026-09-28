@@ -42,6 +42,9 @@ class HealthCheckServiceTest {
     @Mock
     private HealthProbe healthProbe;
 
+    @Mock
+    private IncidentEvaluator incidentEvaluator;
+
     private HealthCheckService healthCheckService;
     private MonitoredService service;
 
@@ -49,7 +52,7 @@ class HealthCheckServiceTest {
     void setUp() {
         service = MonitoredService.register("payment-service", "http://localhost:8081", "/health");
         healthCheckService = new HealthCheckService(serviceRepository, healthCheckRepository, healthProbe,
-                Clock.fixed(CHECKED_AT, ZoneOffset.UTC));
+                Clock.fixed(CHECKED_AT, ZoneOffset.UTC), incidentEvaluator);
     }
 
     @Test
@@ -69,6 +72,10 @@ class HealthCheckServiceTest {
         assertThat(captor.getValue().getService()).isSameAs(service);
         assertThat(captor.getValue().getResponseTimeMs()).isEqualTo(12);
         verify(serviceRepository).save(service);
+        var order = org.mockito.Mockito.inOrder(healthCheckRepository, incidentEvaluator);
+        order.verify(healthCheckRepository).save(any(HealthCheck.class));
+        order.verify(healthCheckRepository).flush();
+        order.verify(incidentEvaluator).evaluate(captor.getValue());
     }
 
     @Test

@@ -4,6 +4,7 @@ import io.github.doctor277.launchguard.service.CheckAlreadyInProgressException;
 import io.github.doctor277.launchguard.service.DuplicateServiceNameException;
 import io.github.doctor277.launchguard.service.DeploymentNotFoundException;
 import io.github.doctor277.launchguard.service.ServiceNotFoundException;
+import io.github.doctor277.launchguard.service.IncidentNotFoundException;
 import jakarta.servlet.http.HttpServletRequest;
 import java.time.Instant;
 import java.util.List;
@@ -22,7 +23,7 @@ public class GlobalExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
-    @ExceptionHandler({ServiceNotFoundException.class, DeploymentNotFoundException.class})
+    @ExceptionHandler({ServiceNotFoundException.class, DeploymentNotFoundException.class, IncidentNotFoundException.class})
     ResponseEntity<ApiError> handleNotFound(RuntimeException exception, HttpServletRequest request) {
         return error(HttpStatus.NOT_FOUND, exception.getMessage(), request, List.of());
     }

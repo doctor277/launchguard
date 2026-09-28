@@ -17,6 +17,9 @@ spring:
     enabled: true
 
 launchguard:
+  incidents:
+    failure-threshold: ${INCIDENT_FAILURE_THRESHOLD:3}
+    recovery-threshold: ${INCIDENT_RECOVERY_THRESHOLD:2}
   monitoring:
     interval: ${MONITORING_INTERVAL:30s}
     initial-delay: ${MONITORING_INITIAL_DELAY:30s}
