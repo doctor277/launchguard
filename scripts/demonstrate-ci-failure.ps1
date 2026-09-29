@@ -17,3 +17,6 @@ if (($output -join "`n") -notmatch 'thisIsNotAComposeProperty') {
     throw "Expected schema validation failure, not an unrelated Docker failure: $output"
 }
 Write-Host "CI_FAILURE_DEMO_OK: invalid Compose configuration exited $exitCode, so subsequent build/delivery steps cannot run."
+# The child failure was expected and verified; this validation script succeeded.
+# GitHub's pwsh wrapper otherwise exits with the lingering native $LASTEXITCODE.
+exit 0
