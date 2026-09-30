@@ -49,7 +49,7 @@ import org.testcontainers.utility.DockerImageName;
 
 @SpringBootTest(classes = LaunchGuardApplication.class, webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @TestPropertySource(properties = {"launchguard.monitoring.initial-delay=24h", "launchguard.kafka.partitions=3",
-        "spring.kafka.listener.concurrency=3", "launchguard.monitoring.response-timeout=3s",
+        "spring.kafka.listener.concurrency=3", "launchguard.monitoring.response-timeout=30s",
         "logging.level.org.apache.kafka=WARN", "logging.level.org.springframework.kafka=WARN",
         "management.tracing.sampling.probability=1.0"})
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -89,6 +89,8 @@ class KafkaMonitoringIntegrationTest {
     private HttpServer http;
     private java.util.concurrent.ExecutorService httpExecutor;
     private CountDownLatch slowStarted;
+    private CountDownLatch blockedStarted;
+    private CountDownLatch releaseBlocked;
 
     @BeforeAll
     void startWorkerWithoutAnyDatabase() {
@@ -119,6 +121,8 @@ class KafkaMonitoringIntegrationTest {
     @BeforeEach
     void startHttpTargets() throws Exception {
         slowStarted = new CountDownLatch(1);
+        blockedStarted = new CountDownLatch(1);
+        releaseBlocked = new CountDownLatch(1);
         httpExecutor = Executors.newCachedThreadPool();
         http = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         http.setExecutor(httpExecutor);
@@ -133,10 +137,25 @@ class KafkaMonitoringIntegrationTest {
             catch (InterruptedException exception) { Thread.currentThread().interrupt(); }
             finally { exchange.close(); }
         });
+        http.createContext("/blocked", exchange -> {
+            blockedStarted.countDown();
+            try {
+                if (releaseBlocked.await(20, TimeUnit.SECONDS)) exchange.sendResponseHeaders(200, -1);
+                else exchange.sendResponseHeaders(503, -1);
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+            } finally {
+                exchange.close();
+            }
+        });
         http.start();
     }
     @AfterEach
-    void stopHttp() { http.stop(0); httpExecutor.shutdownNow(); }
+    void stopHttp() {
+        releaseBlocked.countDown();
+        http.stop(0);
+        httpExecutor.shutdownNow();
+    }
     @AfterAll
     void stopContainers() {
         if (worker != null) worker.close();
@@ -170,7 +189,7 @@ class KafkaMonitoringIntegrationTest {
 
     @Test
     void fullKafkaFlowPersistsFastServicesBeforeSlowAndCapturesDispatchDeployment() throws Exception {
-        var slow = register("/slow");
+        var slow = register("/blocked");
         var fastPayment = register("/healthy");
         var fastOrder = register("/healthy");
         var firstDeployment = deployments.create(slow.getId(), new CreateDeploymentRequest("v1", "a921fc7", "CI release",
@@ -178,18 +197,27 @@ class KafkaMonitoringIntegrationTest {
         assertThat(firstDeployment.source()).isEqualTo(io.github.doctor277.launchguard.domain.DeploymentSource.CI);
         long started = System.nanoTime();
         var slowQueued = dispatcher.dispatch(slow.getId());
-        assertThat(slowStarted.await(10, TimeUnit.SECONDS)).isTrue();
-        var nextDeployment = deployments.create(slow.getId(), new CreateDeploymentRequest("v2", null, null));
-        var paymentQueued = dispatcher.dispatch(fastPayment.getId());
-        var orderQueued = dispatcher.dispatch(fastOrder.getId());
-        await().atMost(Duration.ofSeconds(10)).until(() -> rows(paymentQueued.requestId()) == 1 && rows(orderQueued.requestId()) == 1);
-        long fastPersistedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
-        assertThat(rows(slowQueued.requestId())).isZero();
+        UUID nextDeploymentId;
+        long fastPersistedMs;
+        try {
+            assertThat(blockedStarted.await(10, TimeUnit.SECONDS)).isTrue();
+            nextDeploymentId = deployments.create(slow.getId(),
+                    new CreateDeploymentRequest("v2", null, null)).id();
+            var paymentQueued = dispatcher.dispatch(fastPayment.getId());
+            var orderQueued = dispatcher.dispatch(fastOrder.getId());
+            await().atMost(Duration.ofSeconds(10)).until(() ->
+                    rows(paymentQueued.requestId()) == 1 && rows(orderQueued.requestId()) == 1);
+            fastPersistedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+            assertThat(rows(slowQueued.requestId())).isZero();
+        } finally {
+            releaseBlocked.countDown();
+        }
         awaitResult(slowQueued.requestId());
         UUID captured = jdbc.sql("SELECT deployment_id FROM health_checks WHERE probe_request_id=:id")
                 .param("id", slowQueued.requestId()).query(UUID.class).single();
         assertThat(captured).isEqualTo(firstDeployment.id());
-        assertThat(services.findById(slow.getId()).orElseThrow().getCurrentDeployment().getId()).isEqualTo(nextDeployment.id());
+        assertThat(services.findById(slow.getId()).orElseThrow().getCurrentDeployment().getId())
+                .isEqualTo(nextDeploymentId);
         assertThat(services.findById(fastPayment.getId()).orElseThrow().getStatus().name()).isEqualTo("HEALTHY");
         System.out.println("KAFKA_FLOW_CONCURRENCY fastPersistedMs=" + fastPersistedMs
                 + " slowPersistedMs=" + TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started));
