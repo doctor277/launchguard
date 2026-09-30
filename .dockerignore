@@ -12,3 +12,8 @@ scripts
 *.log
 .env*
 README.md
+**/node_modules
+dashboard/dist
+dashboard/coverage
+dashboard/test-results
+dashboard/playwright-report

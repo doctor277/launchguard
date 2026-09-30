@@ -1,5 +1,5 @@
 x-application-build-args: &application-build-args
-  APP_VERSION: ${APP_VERSION:-0.8.0-SNAPSHOT}
+  APP_VERSION: ${APP_VERSION:-0.9.0-SNAPSHOT}
   GIT_SHA: ${GIT_SHA:-unknown}
   BUILD_TIMESTAMP: ${BUILD_TIMESTAMP:-unknown}
 
@@ -52,7 +52,7 @@ services:
     restart: unless-stopped
 
   backend:
-    image: ${IMAGE_PREFIX:-launchguard}/backend:${IMAGE_TAG:-0.8.0-SNAPSHOT}
+    image: ${IMAGE_PREFIX:-launchguard}/backend:${IMAGE_TAG:-0.9.0-SNAPSHOT}
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -93,8 +93,28 @@ services:
     restart: unless-stopped
     networks: [default, database]
 
+  dashboard:
+    image: ${IMAGE_PREFIX:-launchguard}/dashboard:${IMAGE_TAG:-0.9.0-SNAPSHOT}
+    build:
+      context: ./dashboard
+      args: *application-build-args
+    ports:
+      - "127.0.0.1:${DASHBOARD_PORT:-3001}:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-T", "2", "-O", "-", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
   probe-worker:
-    image: ${IMAGE_PREFIX:-launchguard}/probe-worker:${IMAGE_TAG:-0.8.0-SNAPSHOT}
+    image: ${IMAGE_PREFIX:-launchguard}/probe-worker:${IMAGE_TAG:-0.9.0-SNAPSHOT}
     build:
       context: .
       dockerfile: probe-worker/Dockerfile
@@ -126,7 +146,7 @@ services:
     restart: unless-stopped
 
   payment-service:
-    image: ${IMAGE_PREFIX:-launchguard}/payment-service:${IMAGE_TAG:-0.8.0-SNAPSHOT}
+    image: ${IMAGE_PREFIX:-launchguard}/payment-service:${IMAGE_TAG:-0.9.0-SNAPSHOT}
     build:
       context: .
       dockerfile: demo-services/payment-service/Dockerfile
@@ -147,7 +167,7 @@ services:
     restart: unless-stopped
 
   order-service:
-    image: ${IMAGE_PREFIX:-launchguard}/order-service:${IMAGE_TAG:-0.8.0-SNAPSHOT}
+    image: ${IMAGE_PREFIX:-launchguard}/order-service:${IMAGE_TAG:-0.9.0-SNAPSHOT}
     build:
       context: .
       dockerfile: demo-services/order-service/Dockerfile
@@ -168,7 +188,7 @@ services:
     restart: unless-stopped
 
   notification-service:
-    image: ${IMAGE_PREFIX:-launchguard}/notification-service:${IMAGE_TAG:-0.8.0-SNAPSHOT}
+    image: ${IMAGE_PREFIX:-launchguard}/notification-service:${IMAGE_TAG:-0.9.0-SNAPSHOT}
     build:
       context: .
       dockerfile: demo-services/notification-service/Dockerfile

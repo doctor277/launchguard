@@ -31,6 +31,21 @@ jobs:
           cache-dependency-path: '**/pom.xml'
       - name: Docker must be available for real integration tests
         run: docker info
+      - name: Pinned Node runtime and npm cache
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: dashboard/.node-version
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - name: Install locked dashboard dependencies
+        working-directory: dashboard
+        run: npm ci
+      - name: Dashboard component and unit tests
+        working-directory: dashboard
+        run: npm test
+      - name: Dashboard production build and TypeScript validation
+        working-directory: dashboard
+        run: npm run build
       - name: Compile and test every Maven module (real PostgreSQL and Kafka)
         run: sh ./mvnw -B -ntp clean verify
       - name: Require all modules, integration suites, and zero skipped tests
@@ -51,13 +66,29 @@ jobs:
         run: ./scripts/set-build-metadata.ps1
       - name: Validate Compose configuration
         run: docker compose config --quiet
-      - name: Build all five application images
-        run: docker compose build backend probe-worker payment-service order-service notification-service
+      - name: Build all six application images
+        run: docker compose build backend probe-worker payment-service order-service notification-service dashboard
+      - name: Install Chromium for real-backend dashboard smoke tests
+        working-directory: dashboard
+        run: npx playwright install --with-deps chromium
+      - name: Start complete runner-local lab
+        run: docker compose up -d --wait --wait-timeout 180
+      - name: Register real demo services
+        shell: pwsh
+        run: ./scripts/register-demo-services.ps1
+      - name: Dashboard browser smoke against real Compose backend
+        working-directory: dashboard
+        run: npm run test:smoke
       - name: Preserve test reports even on failure
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: test-reports-${{ github.run_id }}-${{ github.run_attempt }}
-          path: '**/target/surefire-reports/**'
+          path: |
+            **/target/surefire-reports/**
+            dashboard/test-results/**
           if-no-files-found: warn
           retention-days: 7
+      - name: Stop runner-local lab without removing volumes
+        if: always()
+        run: docker compose down

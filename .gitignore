@@ -13,3 +13,8 @@ hs_err_pid*
 replay_pid*
 .tools/
 .maven-home/
+node_modules/
+dashboard/dist/
+dashboard/coverage/
+dashboard/test-results/
+dashboard/playwright-report/

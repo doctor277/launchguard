@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       publish_ghcr:
-        description: Publish all five images to GHCR after validation
+        description: Publish all six application images to GHCR after validation
         type: boolean
         required: true
         default: false
@@ -46,7 +46,7 @@ jobs:
       - name: Build tested application images
         run: |
           docker compose config --quiet
-          docker compose build backend probe-worker payment-service order-service notification-service
+          docker compose build backend probe-worker payment-service order-service notification-service dashboard
       - name: Start runner-local LaunchGuard lab
         run: docker compose up -d --wait --wait-timeout 180
       - name: Produce metadata, report deployment, verify monitoring and idempotency
@@ -81,7 +81,7 @@ jobs:
           owner="${GHCR_OWNER,,}"
           printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_OWNER" --password-stdin
           trap 'docker logout ghcr.io' EXIT
-          for app in backend probe-worker payment-service order-service notification-service; do
+          for app in backend probe-worker payment-service order-service notification-service dashboard; do
             source="launchguard/$app:$IMAGE_TAG"
             target="ghcr.io/$owner/launchguard-$app"
             # Both tags identify this tested commit; bare version/latest tags are intentionally absent.
