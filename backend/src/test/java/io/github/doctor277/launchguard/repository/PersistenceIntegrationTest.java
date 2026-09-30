@@ -536,6 +536,19 @@ class PersistenceIntegrationTest {
         assertThat(incidentService.findById(service.getId(), incident.id()).deployment().id()).isEqualTo(deployment.id());
     }
 
+    @Test
+    void serviceManagerDeletesAServiceWithItsCurrentDeploymentAndCheckHistory() {
+        var service = ciService();
+        var deployment = deploymentService.create(service.getId(), ciRequest("delete-current"));
+        var check = persistAndEvaluate(service, ServiceStatus.HEALTHY, Instant.now());
+
+        serviceManager.delete(service.getId());
+
+        assertThat(serviceRepository.findById(service.getId())).isEmpty();
+        assertThat(deploymentRepository.findById(deployment.id())).isEmpty();
+        assertThat(healthCheckRepository.findById(check.getId())).isEmpty();
+    }
+
     private MonitoredService ciService() {
         return serviceRepository.saveAndFlush(MonitoredService.register("ci-" + UUID.randomUUID(),
                 "http://payment-service:8081", "/health"));

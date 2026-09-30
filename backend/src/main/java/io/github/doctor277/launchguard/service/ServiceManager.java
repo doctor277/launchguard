@@ -55,7 +55,10 @@ public class ServiceManager {
     @Transactional
     public void delete(UUID id) {
         MonitoredService service = getRequired(id);
-        serviceRepository.delete(service);
+        // A bulk delete lets PostgreSQL apply the documented cascading foreign keys. Deleting the
+        // managed entity directly makes Hibernate validate its current Deployment back-reference as
+        // transient before the deferred database constraints can perform the cascade.
+        serviceRepository.deleteAllByIdInBatch(List.of(service.getId()));
     }
 
     @Transactional(readOnly = true)
