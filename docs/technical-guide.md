@@ -10,7 +10,10 @@ Platform telemetry surrounds the asynchronous monitoring path:
 
 ```mermaid
 flowchart LR
-    API[Async API / scheduler] --> Backend[Backend dispatcher]
+    Browser[Browser] --> Dashboard[React dashboard / Nginx]
+    Dashboard -->|relative /api proxy| API[Backend REST API]
+    API --> Backend[Backend dispatcher]
+    Scheduler[Scheduler] --> Backend
     Backend -->|W3C headers + request DTO| Kafka[Kafka]
     Kafka --> Worker[Probe worker]
     Worker -->|traced outbound HTTP| Demos[Three demo services]
@@ -34,7 +37,7 @@ flowchart LR
     CI --> Compile[Java 25 Maven reactor]
     Compile --> Tests[Unit and real PostgreSQL / Kafka tests]
     Tests --> Gate[Zero skips / scripts / actionlint / Compose gate]
-    Gate --> Images[Five non-root images with OCI metadata]
+    Gate --> Images[Six non-root images with OCI metadata]
     Images --> Delivery[Manual trusted-main delivery workflow]
     Delivery --> Lab[Runner-local Compose demonstration]
     Delivery -. optional .-> GHCR[GHCR SHA tags and digests]
@@ -48,17 +51,20 @@ flowchart LR
 ```mermaid
 flowchart LR
     Developer[Developer on host] -->|localhost:8080| Backend
+    Developer -->|localhost:3001| Dashboard
     Developer -->|localhost:8081| Payment
     Developer -->|localhost:8082| Order
     Developer -->|localhost:8083| Notification
     subgraph Compose[Compose networks]
         Backend[backend :8080]
+        Dashboard[dashboard :8080]
         Kafka[Kafka KRaft :9092]
         Worker[probe-worker :8084]
         Payment[payment-service :8081]
         Order[order-service :8082]
         Notification[notification-service :8083]
         DB[(postgres :5432)]
+        Dashboard -->|/api| Backend
         Backend -->|HealthCheckRequested| Kafka
         Kafka -->|requests| Worker
         Worker -->|HTTP /health via Docker DNS| Payment
@@ -103,7 +109,7 @@ flowchart LR
 
 The backend retains its controller/service/repository structure. Scheduled probes now use the dispatcher, Kafka, and the worker. Result persistence atomically writes history, updates current status, and invokes the existing incident evaluator. Direct HTTP probing remains only for the synchronous manual endpoint. The worker has neither database dependencies nor credentials; Compose also places PostgreSQL on a network the worker does not join.
 
-V0.2 adds a metrics service, a database aggregation repository, a dedicated time-window parser, lightweight timeline projections, and an API-owned pagination response. V0.3 adds a deployment service and deployment-specific SQL aggregation. V0.4 adds a dedicated incident evaluator and read-only incident APIs. Controllers return DTOs; JPA entities, Spring `Page` objects, and database projection types do not leak through the REST contract.
+The application dashboard consumes the existing DTO-based APIs through a same-origin reverse proxy; no frontend-specific backend routes or CORS policy are required. Metrics remain database aggregates, history remains paginated, and JPA entities, Spring `Page` objects, and database projection types do not leak through the REST contract.
 
 Actuator exposes health and Prometheus endpoints on backend and worker, with hidden health details and separate readiness/liveness groups. Compose waits for PostgreSQL and Kafka health before starting the backend. Demos do not gate backend startup: an unavailable target is a normal monitored failure. Docker health status does not restart an unhealthy demo; `restart: unless-stopped` handles exited processes, not failed probes.
 
@@ -126,6 +132,8 @@ flowchart LR
 - Flyway
 - Docker Compose
 - JUnit 6, Mockito, AssertJ, and Testcontainers 2
+- React 19, TypeScript 7, Vite 8, Vitest 5, React Testing Library, and Playwright
+- Nginx unprivileged for the production dashboard image
 
 ## Repository structure
 
@@ -135,6 +143,7 @@ launchguard/
 |   |-- src/main/java/
 |   |-- src/main/resources/db/migration/
 |   `-- src/test/java/
+|-- dashboard/                       React application, tests, and Nginx API proxy
 |-- monitoring-events/               Shared versioned JSON contracts and Kafka configuration
 |-- probe-worker/                    Independent Kafka/HTTP worker; no database
 |-- demo-services/
@@ -146,7 +155,7 @@ launchguard/
 |-- docs/                            Milestone validation reports
 |-- .mvn/wrapper/                    Maven Wrapper configuration
 |-- observability/                   Collector / Prometheus / Tempo / Grafana provisioning
-|-- docker-compose.yml               Complete eleven-container observability lab
+|-- docker-compose.yml               Complete twelve-container application/observability lab
 |-- .env.example                     Optional Compose overrides
 |-- pom.xml                          Multi-module reactor build
 |-- mvnw / mvnw.cmd
@@ -163,11 +172,12 @@ No global Maven installation is required.
 
 ## Quick start with Docker Compose
 
-Clone your checkout, change into `launchguard`, and start all eleven containers:
+Clone the public repository, change into `launchguard`, and start all twelve containers:
 
 ```bash
-git clone <your-launchguard-repository-url>
+git clone https://github.com/doctor277/launchguard.git
 cd launchguard
+cp .env.example .env
 docker compose up --build
 ```
 
@@ -176,6 +186,7 @@ The first build downloads Java images and Maven dependencies. For detached, read
 All published ports are bound to host loopback, not all network interfaces:
 
 - LaunchGuard API: `http://localhost:8080`
+- LaunchGuard application dashboard: `http://localhost:3001`
 - Demo payment service: `http://localhost:8081`
 - Demo order service: `http://localhost:8082`
 - Demo notification service: `http://localhost:8083`
@@ -224,7 +235,7 @@ PostgreSQL data is retained in the named `launchguard-postgres-data` volume (nor
 
 To **erase all lab database history**, deliberately run `docker compose down -v`, then start and register the demos again. This is destructive; do not use it for ordinary stops/restarts. Do not change the Compose project name/directory if you intend to reuse the same volume.
 
-Optional overrides: copy `.env.example` to `.env` and edit it before starting. For example, set `POSTGRES_PORT=5433` if a host PostgreSQL already owns port 5432. The backend still connects to `postgres:5432` internally. Host port overrides are `LAUNCHGUARD_PORT`, `PAYMENT_PORT`, `ORDER_PORT`, and `NOTIFICATION_PORT`; pass corresponding host URLs to scripts when changed.
+Optional overrides: copy `.env.example` to `.env` and edit it before starting. For example, set `POSTGRES_PORT=5433` if a host PostgreSQL already owns port 5432. The backend still connects to `postgres:5432` internally. Host port overrides are `DASHBOARD_PORT`, `LAUNCHGUARD_PORT`, `PAYMENT_PORT`, `ORDER_PORT`, and `NOTIFICATION_PORT`; pass corresponding host URLs to scripts when changed.
 
 ## Run applications locally
 
@@ -238,7 +249,7 @@ In one terminal, start the backend:
 
 ```bash
 sh ./mvnw -DskipTests package
-java -jar backend/target/launchguard-backend-0.8.0-SNAPSHOT.jar
+java -jar backend/target/launchguard-backend-0.9.0-SNAPSHOT.jar
 ```
 
 On Windows PowerShell or Command Prompt, use `mvnw.cmd` in place of `sh ./mvnw`.
@@ -246,7 +257,7 @@ On Windows PowerShell or Command Prompt, use `mvnw.cmd` in place of `sh ./mvnw`.
 Start the worker in another terminal:
 
 ```bash
-java -jar probe-worker/target/probe-worker-0.8.0-SNAPSHOT-exec.jar
+java -jar probe-worker/target/probe-worker-0.9.0-SNAPSHOT-exec.jar
 ```
 
 For host-run Java processes, Kafka defaults to `localhost:9092`; if its host port changes, set `KAFKA_BOOTSTRAP_SERVERS`. Containers use `kafka:9092` independently of host ports.
@@ -632,6 +643,24 @@ To execute all scenarios, inspect database UUIDs directly, restart the full envi
 
 This script intentionally changes demo controls and recreates this Compose project's containers. It never removes volumes or invokes manual LaunchGuard checks; incident confirmation must come from scheduled checks. Run it only against the local lab with the default 5s HTTP response timeout. It polls state with bounded deadlines rather than assuming fixed startup sleeps. The final report includes service/incident samples, latency/network failures, database counts, container health, and non-root runtime verification. Existing lab data is preserved.
 
+## Application dashboard
+
+The dashboard is a separate React application. Its overview route loads the service registry and 24-hour reliability metrics with a maximum of four concurrent metric requests. It derives service counts from current API status, displays `HEALTHY`, `DOWN`, and `UNKNOWN` explicitly, and shows current-deployment and open-incident summaries supplied by the backend. A failed per-service metric request remains local to that row instead of blanking the whole overview.
+
+Hash-based service routes (`#/services/{id}`) provide reliability metrics, a bounded SVG latency/status timeline, paginated health checks, current deployment metadata, deployment history and deployment-specific metrics, the current incident, paginated incident history, and incident metrics. The chart reduces long timelines to at most 240 plotted points while preserving failures and latency peaks; the backend timeline response itself remains raw and unpaginated.
+
+Data refreshes every 10 seconds while the tab is visible and can also be refreshed manually. Requests have a 10-second client timeout and are aborted when a view changes or unmounts. Loading, empty, structured API error, backend-unavailable, partial-section failure, and missing-service states are rendered explicitly. The dashboard is read-only: registration, checks, failure controls, and deployment reporting remain API/script operations.
+
+For local frontend development, run the backend separately and use the Vite proxy:
+
+```bash
+cd dashboard
+npm ci
+npm run dev
+```
+
+Vite listens on `http://localhost:3001` and proxies `/api` to `DASHBOARD_BACKEND_URL` (default `http://localhost:8080`). The production multi-stage image builds static assets with the lockfile, runs Nginx unprivileged, serves the SPA on container port 8080, exposes `/healthz`, and proxies relative `/api` requests to `backend:8080`. This same-origin design does not expose backend credentials or require CORS changes. Grafana remains the platform telemetry dashboard; it is not replaced by this application UI.
+
 ## Tests and build
 
 Run the complete reactor test suite:
@@ -640,10 +669,19 @@ Run the complete reactor test suite:
 sh ./mvnw clean test
 ```
 
-Build all five executable applications and the shared contracts in the seven-module reactor:
+Build all five executable Java applications and the shared contracts in the seven-module reactor:
 
 ```bash
 sh ./mvnw clean package
+```
+
+Run the dashboard unit/component tests and production build independently:
+
+```bash
+cd dashboard
+npm ci
+npm test
+npm run build
 ```
 
 Unit tests cover the V0.1 probing, persistence, transitions, API validation, and demo failure/recovery behavior. V0.2 adds coverage for windowed metrics and pagination. V0.3 adds deployment registration, replacement, correlation, scoped metrics, validation, and pagination tests. V0.4 adds failure/recovery thresholds, interrupted streaks, deployment snapshots, incident APIs, filtering, durations, and incident metrics. PostgreSQL integration tests exercise full lifecycles, concurrent evaluation, database uniqueness, foreign keys, deletion semantics, database aggregation, and staged V1-to-V2-to-V3 migration compatibility. V0.5 adds real HTTP probing of three independent targets with persisted isolated incident lifecycles, plus each demo's delay validation, recovery, and independent state.
@@ -743,13 +781,14 @@ Both producers use `acks=all` and idempotent producer retries, with bounded queu
 
 ### Compose and configuration
 
-The eleven Compose services are PostgreSQL, Kafka, backend, probe-worker, three demos, Collector, Prometheus, Grafana, and Tempo. Kafka uses combined KRaft broker/controller roles without ZooKeeper. Backend startup waits for PostgreSQL and Kafka health; the worker waits only for Kafka. All five application images run non-root. Backend and worker expose health and Prometheus endpoints, with hidden health details. Backend readiness covers PostgreSQL/Kafka; worker readiness covers Kafka. This is connectivity readiness, not a guarantee that every consumer is assigned or every record is processed.
+The twelve Compose services are PostgreSQL, Kafka, backend, dashboard, probe-worker, three demos, Collector, Prometheus, Grafana, and Tempo. Kafka uses combined KRaft broker/controller roles without ZooKeeper. Backend startup waits for PostgreSQL and Kafka health; the dashboard waits for backend health; the worker waits only for Kafka. All six application images run non-root. Backend and worker expose health and Prometheus endpoints, with hidden health details; the dashboard exposes `/healthz`. Backend readiness covers PostgreSQL/Kafka; worker readiness covers Kafka. This is connectivity readiness, not a guarantee that every consumer is assigned or every record is processed.
 
 Extra environment variables:
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `KAFKA_PORT` | `9092` | Compose loopback host listener |
+| `DASHBOARD_PORT` | `3001` | Compose loopback application dashboard |
 | `PROBE_WORKER_PORT` | `8084` | Compose loopback worker health port |
 | `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | Host-run backend/worker broker address |
 | `KAFKA_TOPIC_PARTITIONS` | `6` | Explicit topic partition count |
@@ -783,7 +822,7 @@ See the [V0.6 validation report](v0.6-validation.md) for actual results and timi
 
 ### CI and delivery workflows
 
-[ci.yml](../.github/workflows/ci.yml) runs on pull requests, pushes to `main`, and reusable workflow calls. It uses Java 25, Maven Wrapper `clean verify`, Maven caching, real PostgreSQL/Kafka Testcontainers, a strict Surefire report gate, PowerShell syntax/contract checks, actionlint 1.7.12 (digest-pinned, with ShellCheck), Compose configuration validation, and all five Docker image builds. Missing reports, missing integration suites, failures, errors, or skipped tests fail the gate. Reports upload even on failure. Obsolete runs for the same PR/branch are cancelled; the Ubuntu 24.04 job has a 40-minute timeout and only `contents: read`. Checkout credentials are not persisted. Only checkout, setup-java, and upload-artifact actions are used, pinned to reviewed release commit SHAs.
+[ci.yml](../.github/workflows/ci.yml) runs on pull requests, pushes to `main`, and reusable workflow calls. It uses Java 25, Maven Wrapper `clean verify`, Maven caching, real PostgreSQL/Kafka Testcontainers, a strict Surefire report gate, PowerShell syntax/contract checks, actionlint 1.7.12 (digest-pinned, with ShellCheck), Compose configuration validation, and all six Docker image builds. Node is selected deterministically from `dashboard/.node-version`; `npm ci`, Vitest, the Vite production build, and a Playwright browser smoke test against the complete Compose backend are required. Missing reports, missing integration suites, failures, errors, or skipped Java tests fail the gate. Reports upload even on failure. Obsolete runs for the same PR/branch are cancelled; the Ubuntu 24.04 job has a 40-minute timeout and only `contents: read`. Checkout credentials are not persisted. Third-party actions remain pinned to reviewed release commit SHAs.
 
 [delivery.yml](../.github/workflows/delivery.yml) is manually dispatched. Its reusable CI job must succeed before delivery. Delivery itself runs only on a non-fork repository's `main` branch: build SHA-tagged images, start the full runner-local lab, report payment's CI deployment, verify metadata/check/incident correlation, replay it, reject a conflicting retry, and save JSON evidence. The job cleans up its disposable containers afterward. Publishing is disabled by default. Neither workflow creates cloud infrastructure or deploys to a remote host.
 
@@ -791,9 +830,9 @@ External reporting is explicitly skipped when repository variable `LAUNCHGUARD_U
 
 ### Image identification and optional GHCR
 
-`set-build-metadata.ps1` reads the root POM version and actual checkout's full Git SHA, supplies a UTC build timestamp, and sets `IMAGE_TAG=sha-<full-sha>`. All five runtime images retain their non-root users and include OCI `version`, `revision`, `created`, and `title` labels. Build arguments contain no credentials. `IMAGE_PREFIX`, `IMAGE_TAG`, `APP_VERSION`, `GIT_SHA`, and `BUILD_TIMESTAMP` are optional Compose overrides; plain local builds use the snapshot tag and `unknown` provenance values rather than inventing a commit/time.
+`set-build-metadata.ps1` reads the root POM version and actual checkout's full Git SHA, supplies a UTC build timestamp, and sets `IMAGE_TAG=sha-<full-sha>`. All six runtime images retain their non-root users and include OCI `version`, `revision`, `created`, and `title` labels. Build arguments contain no credentials. `IMAGE_PREFIX`, `IMAGE_TAG`, `APP_VERSION`, `GIT_SHA`, and `BUILD_TIMESTAMP` are optional Compose overrides; plain local builds use the snapshot tag and `unknown` provenance values rather than inventing a commit/time.
 
-Delivery's `publish_ghcr` input optionally publishes `ghcr.io/<lowercase-owner>/launchguard-<application>:sha-<full-sha>` and `<version>-<full-sha>` for backend, worker, and all three demos. No `latest` or bare-version tag is pushed. It logs in through stdin with built-in `GITHUB_TOKEN`, logs out afterward, and grants only `contents: read` plus `packages: write` to the trusted delivery job. PR CI cannot publish. No PAT or custom secret is required. Package/repository policies may still need maintainer configuration on GitHub.
+Delivery's `publish_ghcr` input optionally publishes `ghcr.io/<lowercase-owner>/launchguard-<application>:sha-<full-sha>` and `<version>-<full-sha>` for backend, dashboard, worker, and all three demos. No `latest` or bare-version tag is pushed. It logs in through stdin with built-in `GITHUB_TOKEN`, logs out afterward, and grants only `contents: read` plus `packages: write` to the trusted delivery job. PR CI cannot publish. No PAT or custom secret is required. Package/repository policies may still need maintainer configuration on GitHub.
 
 SHA-based tags identify a tested commit; registries can still permit tag replacement, especially on rebuilds with a new timestamp. For strict content immutability, consumers must pin the registry image digest. Local dirty builds warn that HEAD does not identify uncommitted changes. Hosted clean checkouts are the provenance reference, not uncommitted local demonstrations.
 
@@ -806,7 +845,7 @@ POST /api/services/{serviceId}/deployments
 Content-Type: application/json
 
 {
-  "version": "0.8.0-SNAPSHOT",
+  "version": "0.9.0-SNAPSHOT",
   "commitSha": "a921fc7",
   "description": "GitHub Actions deployment",
   "source": "CI",
@@ -929,9 +968,10 @@ Grafana provisions `launchguard-prometheus` and `launchguard-tempo` plus dashboa
 
 | Component | Image | Default host port | Validated local override |
 |---|---|---|---|
-| Backend | LaunchGuard 0.8.0-SNAPSHOT | 8080 | 9080 |
-| Worker | LaunchGuard 0.8.0-SNAPSHOT | 8084 | 9084 |
-| Payment / order / notification | LaunchGuard 0.8.0-SNAPSHOT | 8081 / 8082 / 8083 | 9081 / 9082 / 9083 |
+| Backend | LaunchGuard 0.9.0-SNAPSHOT | 8080 | 9080 |
+| Dashboard | LaunchGuard 0.9.0-SNAPSHOT | 3001 | 3001 |
+| Worker | LaunchGuard 0.9.0-SNAPSHOT | 8084 | 9084 |
+| Payment / order / notification | LaunchGuard 0.9.0-SNAPSHOT | 8081 / 8082 / 8083 | 9081 / 9082 / 9083 |
 | PostgreSQL | 18.6-alpine | 5432 | 15432 |
 | Kafka | 4.3.0 | 9092 | 19092 |
 | Prometheus | v3.10.0 | 9090 | 9090 |
@@ -1040,7 +1080,7 @@ Registration uses PostgreSQL `FOR NO KEY UPDATE` on the service row before check
 - Incident thresholds are global, not configurable per service; changing them affects the next evaluation of persisted recent history.
 - No distributed scheduling infrastructure or support guarantee for multiple monitoring instances. Database locking and uniqueness protect incident transitions, but the check guard remains process-local.
 - Historical failures before V0.4 are not backfilled into incidents; they can contribute to a streak evaluated by a new check.
-- Grafana provides platform dashboards only; there is no LaunchGuard application frontend.
+- The application dashboard is read-only and polls REST APIs; it has no push transport, editing controls, or authentication boundary. Grafana remains a separate platform telemetry view.
 - Timeline results are raw and unpaginated; long `all` windows can produce a large response.
 - Deployment registration records the server time; importing historical deployment timestamps is not supported.
 - Checks capture the current deployment before probing. If registration races with an in-flight probe, that check retains the deployment it observed at the start.
@@ -1061,3 +1101,4 @@ The reports are historical implementation/validation snapshots, including the ac
 - [Kafka monitoring validation](v0.6-validation.md)
 - [Delivery automation validation](v0.7-validation.md)
 - [Observability validation and the 133-test reactor results](v0.8-validation.md)
+- [Application dashboard validation](v0.9-validation.md)

@@ -1,6 +1,10 @@
 # LaunchGuard
 
-LaunchGuard is an event-driven service monitoring and deployment reliability platform built with Java, Kafka, and PostgreSQL. It detects incidents from HTTP health checks, correlates results with deployments, and runs locally with Docker Compose. Prometheus, Grafana, OpenTelemetry, and Tempo provide platform metrics and distributed tracing.
+[![CI](https://github.com/doctor277/launchguard/actions/workflows/ci.yml/badge.svg)](https://github.com/doctor277/launchguard/actions/workflows/ci.yml) [![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Java 25](https://img.shields.io/badge/Java-25-orange.svg)](https://openjdk.org/projects/jdk/25/)
+
+LaunchGuard is an event-driven service monitoring and deployment reliability platform built with Java, Kafka, and PostgreSQL. Its React dashboard presents service health, reliability, incidents, and deployments, while Prometheus, Grafana, OpenTelemetry, and Tempo provide platform metrics and distributed tracing.
+
+![LaunchGuard application dashboard](docs/images/launchguard-dashboard.png)
 
 ## Features
 
@@ -8,6 +12,7 @@ LaunchGuard is an event-driven service monitoring and deployment reliability pla
 - PostgreSQL-backed check history, availability and latency statistics, timelines, and paginated APIs.
 - Deployment tracking that preserves the deployment associated with each check and incident.
 - Automatic incident detection and recovery using configurable consecutive-failure/healthy thresholds.
+- Responsive application dashboard with service overview, reliability timelines, check history, incidents, and deployment context.
 - Transactional result deduplication, bounded worker concurrency, consumer retries, and dead-letter topics.
 - Provisioned observability dashboards, distributed traces, and structured correlation logs.
 - Three independent demo services with failure/latency controls, plus CI validation and opt-in delivery demonstrations.
@@ -16,7 +21,9 @@ LaunchGuard is an event-driven service monitoring and deployment reliability pla
 
 ```mermaid
 flowchart LR
-    Client[REST API / scheduler] --> Backend[Backend]
+    Browser[Browser] --> Dashboard[React dashboard / Nginx]
+    Dashboard -->|relative /api proxy| Backend[Backend]
+    Client[REST API client / scheduler] --> Backend
     subgraph Kafka[Kafka]
         Requests[Probe requests]
         Results[Probe results]
@@ -45,18 +52,19 @@ The backend dispatches probes through Kafka; the database-free worker performs b
 | Area | Technology |
 |---|---|
 | Application | Java 25, Spring Boot 4.1.1 |
+| Dashboard | React 19, TypeScript 7, Vite 8, Nginx |
 | Build | Maven 3.9.16 via Maven Wrapper |
 | Messaging | Apache Kafka 4.3.0, Spring Kafka |
 | Persistence | PostgreSQL 18.6, Spring Data JPA, Flyway |
-| Local environment | Docker Compose, five non-root application images |
+| Local environment | Docker Compose, six non-root application images |
 | Metrics and dashboards | Micrometer, Prometheus 3.10.0, Grafana 12.4.11 |
 | Tracing | OpenTelemetry, Collector 0.147.0, Tempo 2.10.7 |
-| Testing | JUnit, Mockito, AssertJ, PostgreSQL/Kafka Testcontainers |
+| Testing | JUnit, Mockito, AssertJ, PostgreSQL/Kafka Testcontainers, Vitest, React Testing Library, Playwright |
 | CI | GitHub Actions |
 
 ## Quick Start
 
-Requirements: Git, Docker with Linux containers and Compose supporting `--wait`, and PowerShell 5.1+ or PowerShell 7 for demo registration. Java 25 is needed only for builds/tests outside Docker; no global Maven installation is required. Repository access is required to clone a private checkout.
+Requirements: Git, Docker with Linux containers and Compose supporting `--wait`, and PowerShell 5.1+ or PowerShell 7 for demo registration. Java 25 is needed only for builds/tests outside Docker; no global Maven installation is required.
 
 ```bash
 git clone https://github.com/doctor277/launchguard.git
@@ -77,6 +85,7 @@ Registration reuses matching services and rejects conflicting targets without ov
 
 | Component | Default host address |
 |---|---|
+| LaunchGuard dashboard | [localhost:3001](http://localhost:3001) |
 | Backend API | `http://localhost:8080` |
 | Probe-worker health | `http://localhost:8084/actuator/health` |
 | Payment health | `http://localhost:8081/health` |
@@ -119,7 +128,7 @@ Full payloads, pagination metadata, incident semantics, and CI-report replay beh
 
 ## Testing
 
-The latest validated reactor contains **133 tests**, with zero failures, errors, or skips. Real PostgreSQL and Kafka Testcontainers exercise the asynchronous HTTP-to-database path, duplicate results, incident transitions, deployment correlation, and trace propagation. See the [recorded validation results](docs/v0.8-validation.md#final-maven-and-integration-results).
+The latest validation contains **134 Java tests** and **33 frontend unit/component tests**, with zero failures, errors, or skips, plus a real-browser Compose smoke test. Real PostgreSQL and Kafka Testcontainers exercise the asynchronous HTTP-to-database path, duplicate results, incident transitions, deployment correlation, and trace propagation. See the [V0.9 validation report](docs/v0.9-validation.md).
 
 With Java 25 and Docker reachable from the JVM, run the same full build/test command used by CI:
 
@@ -136,7 +145,16 @@ Windows PowerShell:
 
 The Compose lab does not need to be running for Testcontainers. Docker unavailability fails integration tests rather than silently skipping them.
 
-[GitHub Actions CI](.github/workflows/ci.yml) runs on pull requests, pushes to `main`, and reusable workflow calls. It checks all Maven modules, zero skipped tests, PowerShell contracts, workflow lint, Compose configuration, and all five application image builds. The separate [delivery workflow](.github/workflows/delivery.yml) is manually dispatched; GHCR publishing is opt-in and disabled by default.
+Run the dashboard checks with the locked Node version from `dashboard/.node-version`:
+
+```bash
+cd dashboard
+npm ci
+npm test
+npm run build
+```
+
+[GitHub Actions CI](.github/workflows/ci.yml) runs on pull requests, pushes to `main`, and reusable workflow calls. It checks locked frontend dependencies, frontend tests/build, all Maven modules, zero skipped Java tests, PowerShell contracts, workflow lint, Compose configuration, all six application image builds, and a real-browser dashboard smoke test against the Compose backend. The separate [delivery workflow](.github/workflows/delivery.yml) is manually dispatched; GHCR publishing is opt-in and disabled by default.
 
 ## Observability
 
@@ -154,6 +172,7 @@ See [observability details](docs/technical-guide.md#platform-observability) for 
 ```text
 launchguard/
 ├── backend/             REST API, dispatch, persistence, incidents, Flyway
+├── dashboard/           React application UI, tests, and Nginx API proxy
 ├── probe-worker/        Kafka consumer and bounded HTTP probe execution
 ├── monitoring-events/   Shared event contracts and Kafka configuration
 ├── demo-services/       payment-service, order-service, notification-service
@@ -161,18 +180,18 @@ launchguard/
 ├── scripts/             Registration, validation, deployment reporting
 ├── docs/                Technical reference and validation history
 ├── .github/workflows/   CI and opt-in delivery demonstration
-├── docker-compose.yml   Eleven-container local lab
+├── docker-compose.yml   Twelve-container local lab
 └── pom.xml              Seven-module Maven reactor, including the parent
 ```
 
 ## Project Status
 
-LaunchGuard is under active development as an engineering and portfolio project, **not a production monitoring service**. It has no application authentication or tenant isolation and is intended for a trusted local lab. Grafana is a platform dashboard, not a LaunchGuard application frontend.
+LaunchGuard is under active development and currently intended for trusted local environments. It is not production-ready and does not yet provide application authentication or tenant isolation. The LaunchGuard dashboard is the application view; Grafana remains the separate platform telemetry view.
 
 ## Documentation
 
 - [Technical guide](docs/technical-guide.md): detailed setup, configuration, APIs, Kafka processing, database design, CI/delivery, observability, and limitations.
-- [Validation reports](docs/): dated milestone implementation and test evidence, including [observability validation](docs/v0.8-validation.md).
+- [Validation reports](docs/): dated milestone implementation and test evidence, including [V0.9 dashboard validation](docs/v0.9-validation.md).
 
 Historical milestone detail lives in `docs/`; the README describes the current repository.
 
@@ -180,7 +199,7 @@ Historical milestone detail lives in `docs/`; the README describes the current r
 
 - Security and controlled external exposure.
 - Per-service policies, distributed scheduling, and data/telemetry retention.
-- An application frontend and deeper deployment integrations.
+- Deeper deployment integrations and operational automation.
 
 These are future areas, not implemented capabilities.
 
