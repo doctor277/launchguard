@@ -691,7 +691,7 @@ By default, the persistence suite starts a disposable PostgreSQL 18 Testcontaine
 On Windows with a WSL-only Docker engine, run Maven with Java 25 inside that same WSL distribution, or configure a supported Docker connection for the Windows JVM. For example in Ubuntu with Java 25 installed:
 
 ```bash
-cd /mnt/c/Users/YOUR_USER/launchguard
+cd launchguard
 unset LAUNCHGUARD_TEST_DB_URL
 sh ./mvnw clean package
 ```
@@ -1071,6 +1071,8 @@ Registration uses PostgreSQL `FOR NO KEY UPDATE` on the service row before check
 - PowerShell blocks scripts: follow your organization's execution policy; a one-process `powershell -ExecutionPolicy Bypass -File scripts/register-demo-services.ps1` is a local option if permitted. In PowerShell use `curl.exe`, not the older `curl` alias, for the curl examples.
 
 ## Current limitations
+
+The optional AWS deployment architecture, account bootstrap, cost controls, and teardown procedure are documented separately in the [AWS deployment guide](aws-deployment.md). The local Compose lab remains the canonical full observability environment.
 
 - The concurrency guard is local to one backend process, not distributed.
 - Probe concurrency is bounded, not unlimited. Four simultaneous slow probes can occupy all default worker threads.

@@ -16,6 +16,7 @@ LaunchGuard is an event-driven service monitoring and deployment reliability pla
 - Transactional result deduplication, bounded worker concurrency, consumer retries, and dead-letter topics.
 - Provisioned observability dashboards, distributed traces, and structured correlation logs.
 - Three independent demo services with failure/latency controls, plus CI validation and opt-in delivery demonstrations.
+- Modular Terraform for an explicitly approved AWS dev deployment using ECR, ECS Fargate, ALB, RDS, optional MSK Serverless, CloudWatch, and GitHub OIDC.
 
 ## Architecture
 
@@ -47,6 +48,23 @@ flowchart LR
 
 The backend dispatches probes through Kafka; the database-free worker performs bounded HTTP work and publishes results back through Kafka. The backend persists results, updates service status, and evaluates incidents in one transaction. Delivery is at-least-once, with database-backed result deduplication. A synchronous manual-check endpoint is also available.
 
+The optional AWS architecture preserves this flow on ECS Fargate. An ALB sends `/` to the dashboard and `/api/*` directly to the backend; RDS and optional MSK Serverless stay in isolated subnets, while demo services use private service discovery. CloudWatch receives the existing structured application logs. See the [AWS deployment guide](docs/aws-deployment.md).
+
+```mermaid
+flowchart LR
+    Internet --> ALB[Application Load Balancer]
+    ALB -->|/| Dashboard[ECS dashboard]
+    ALB -->|/api/*| CloudBackend[ECS backend]
+    CloudBackend --> RDS[(RDS PostgreSQL)]
+    CloudBackend --> MSK[MSK Serverless]
+    MSK --> CloudWorker[ECS probe worker]
+    CloudWorker --> CloudMap[Private demo services]
+    CloudWorker --> MSK
+    ECS[ECS services] --> Logs[CloudWatch Logs]
+    Actions[GitHub Actions OIDC] --> ECR[ECR commit-SHA images]
+    ECR --> ECS
+```
+
 ## Tech Stack
 
 | Area | Technology |
@@ -61,6 +79,7 @@ The backend dispatches probes through Kafka; the database-free worker performs b
 | Tracing | OpenTelemetry, Collector 0.147.0, Tempo 2.10.7 |
 | Testing | JUnit, Mockito, AssertJ, PostgreSQL/Kafka Testcontainers, Vitest, React Testing Library, Playwright |
 | CI | GitHub Actions |
+| Optional cloud deployment | Terraform 1.14, AWS ECR, ECS Fargate, ALB, RDS, MSK Serverless, CloudWatch, GitHub OIDC |
 
 ## Quick Start
 
@@ -128,7 +147,7 @@ Full payloads, pagination metadata, incident semantics, and CI-report replay beh
 
 ## Testing
 
-The latest validation contains **134 Java tests** and **33 frontend unit/component tests**, with zero failures, errors, or skips, plus a real-browser Compose smoke test. Real PostgreSQL and Kafka Testcontainers exercise the asynchronous HTTP-to-database path, duplicate results, incident transitions, deployment correlation, and trace propagation. See the [V0.9 validation report](docs/v0.9-validation.md).
+The latest validation contains **134 Java tests** and **33 frontend unit/component tests**, with zero failures, errors, or skips, plus a real-browser Compose smoke test. Real PostgreSQL and Kafka Testcontainers exercise the asynchronous HTTP-to-database path, duplicate results, incident transitions, deployment correlation, and trace propagation. See the [V0.10 validation report](docs/v0.10-validation.md).
 
 With Java 25 and Docker reachable from the JVM, run the same full build/test command used by CI:
 
@@ -154,7 +173,7 @@ npm test
 npm run build
 ```
 
-[GitHub Actions CI](.github/workflows/ci.yml) runs on pull requests, pushes to `main`, and reusable workflow calls. It checks locked frontend dependencies, frontend tests/build, all Maven modules, zero skipped Java tests, PowerShell contracts, workflow lint, Compose configuration, all six application image builds, and a real-browser dashboard smoke test against the Compose backend. The separate [delivery workflow](.github/workflows/delivery.yml) is manually dispatched; GHCR publishing is opt-in and disabled by default.
+[GitHub Actions CI](.github/workflows/ci.yml) runs on pull requests, pushes to `main`, and reusable workflow calls. It checks locked frontend dependencies, frontend tests/build, all Maven modules, zero skipped Java tests, PowerShell contracts, workflow lint, Terraform formatting/validation, Compose configuration, all six application image builds, and a real-browser dashboard smoke test against the Compose backend. The [delivery](.github/workflows/delivery.yml) and [AWS deployment](.github/workflows/aws-deploy.yml) workflows are manually dispatched; publication/deployment remains opt-in.
 
 ## Observability
 
@@ -171,6 +190,7 @@ See [observability details](docs/technical-guide.md#platform-observability) for 
 
 ```text
 launchguard/
+├── infra/terraform/     Modular AWS dev infrastructure
 ├── backend/             REST API, dispatch, persistence, incidents, Flyway
 ├── dashboard/           React application UI, tests, and Nginx API proxy
 ├── probe-worker/        Kafka consumer and bounded HTTP probe execution
@@ -186,12 +206,13 @@ launchguard/
 
 ## Project Status
 
-LaunchGuard is under active development and currently intended for trusted local environments. It is not production-ready and does not yet provide application authentication or tenant isolation. The LaunchGuard dashboard is the application view; Grafana remains the separate platform telemetry view.
+LaunchGuard is under active development. Its complete local lab is the primary demonstration environment; an optional, private-by-default AWS dev architecture is defined but not automatically provisioned. It is not production-ready and does not yet provide application authentication or tenant isolation. The LaunchGuard dashboard is the application view; Grafana remains the separate local platform telemetry view.
 
 ## Documentation
 
 - [Technical guide](docs/technical-guide.md): detailed setup, configuration, APIs, Kafka processing, database design, CI/delivery, observability, and limitations.
-- [Validation reports](docs/): dated milestone implementation and test evidence, including [V0.9 dashboard validation](docs/v0.9-validation.md).
+- [AWS deployment guide](docs/aws-deployment.md): architecture, cost controls, account/OIDC bootstrap, deployment, verification, and teardown.
+- [Validation reports](docs/): dated milestone implementation and test evidence, including [V0.10 AWS deployment validation](docs/v0.10-validation.md).
 
 Historical milestone detail lives in `docs/`; the README describes the current repository.
 
