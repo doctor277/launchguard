@@ -59,6 +59,24 @@ jobs:
           ./scripts/demonstrate-ci-failure.ps1
       - name: Workflow lint (pinned tool, includes ShellCheck)
         run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
+      - name: Terraform CLI
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.14.6
+          terraform_wrapper: false
+      - name: Terraform formatting and provider-schema validation
+        working-directory: infra/terraform/environments/dev
+        run: |
+          terraform fmt -check -recursive ../..
+          terraform init -backend=false -input=false
+          terraform validate
+          terraform test
+      - name: TFLint CLI
+        uses: terraform-linters/setup-tflint@b480b8fcdaa6f2c577f8e4fa799e89e756bb7c93 # v6.2.2
+        with:
+          tflint_version: v0.64.0
+      - name: Terraform static lint
+        run: tflint --chdir=infra/terraform/environments/dev --recursive --format compact
       - name: Whitespace validation
         run: git diff --check
       - name: Build metadata

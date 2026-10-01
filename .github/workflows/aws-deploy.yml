@@ -1,0 +1,122 @@
+name: AWS deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_deploy:
+        description: Type DEPLOY to publish this commit and update the existing dev ECS services
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aws-dev-deployment
+  cancel-in-progress: false
+
+jobs:
+  tests:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  deploy:
+    needs: tests
+    if: inputs.confirm_deploy == 'DEPLOY' && github.ref == 'refs/heads/main' && !github.event.repository.fork
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: aws-dev
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECS_CLUSTER: dev-launchguard
+      ECR_PREFIX: dev-launchguard
+    steps:
+      - name: Checkout tested revision
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Configure short-lived AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: launchguard-${{ github.run_id }}
+      - name: Resolve immutable image coordinates
+        shell: pwsh
+        run: |
+          ./scripts/set-build-metadata.ps1
+          $account = aws sts get-caller-identity --query Account --output text
+          if ($LASTEXITCODE -ne 0 -or $account -notmatch '^\d{12}$') { throw 'Unable to resolve the AWS account.' }
+          "IMAGE_PREFIX=$account.dkr.ecr.$env:AWS_REGION.amazonaws.com/$env:ECR_PREFIX" | Add-Content -LiteralPath $env:GITHUB_ENV
+      - name: Authenticate Docker to ECR
+        shell: bash
+        run: |
+          set -euo pipefail
+          registry="${IMAGE_PREFIX%%/*}"
+          aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$registry"
+      - name: Build and push all six commit-SHA images
+        shell: bash
+        run: |
+          set -euo pipefail
+          apps=(backend probe-worker payment-service order-service notification-service dashboard)
+          docker compose config --quiet
+          docker compose build "${apps[@]}"
+          for app in "${apps[@]}"; do
+            docker push "$IMAGE_PREFIX/$app:$IMAGE_TAG"
+          done
+      - name: Register task-definition revisions and update ECS services
+        shell: bash
+        run: |
+          set -euo pipefail
+          apps=(backend probe-worker payment-service order-service notification-service dashboard)
+          mkdir -p target/aws-deployment
+          for app in "${apps[@]}"; do
+            family="$ECS_CLUSTER-$app"
+            aws ecs describe-task-definition --task-definition "$family" --query taskDefinition > "target/aws-deployment/$app-current.json"
+            jq --arg image "$IMAGE_PREFIX/$app:$IMAGE_TAG" --arg app "$app" '
+              del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities,
+                  .registeredAt, .registeredBy, .deregisteredAt)
+              | .containerDefinitions |= map(if .name == $app then .image = $image else . end)
+            ' "target/aws-deployment/$app-current.json" > "target/aws-deployment/$app-next.json"
+            task_definition_arn="$(aws ecs register-task-definition \
+              --cli-input-json "file://target/aws-deployment/$app-next.json" \
+              --query taskDefinition.taskDefinitionArn --output text)"
+            aws ecs update-service --cluster "$ECS_CLUSTER" --service "$family" \
+              --task-definition "$task_definition_arn" --force-new-deployment >/dev/null
+            printf '%s\t%s\t%s\n' "$app" "$IMAGE_TAG" "$task_definition_arn" | tee -a target/aws-deployment/deployed.tsv
+          done
+      - name: Wait for all ECS services to stabilize
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services \
+            dev-launchguard-backend dev-launchguard-probe-worker dev-launchguard-payment-service \
+            dev-launchguard-order-service dev-launchguard-notification-service dev-launchguard-dashboard
+          echo "Deployed immutable image tag $IMAGE_TAG"
+      - name: Optional LaunchGuard deployment report
+        shell: pwsh
+        env:
+          LAUNCHGUARD_URL: ${{ vars.LAUNCHGUARD_AWS_URL }}
+          LAUNCHGUARD_SERVICE_ID: ${{ vars.LAUNCHGUARD_SERVICE_ID }}
+        run: |
+          if (-not $env:LAUNCHGUARD_URL -or -not $env:LAUNCHGUARD_SERVICE_ID) {
+            Write-Host 'SKIPPED deployment reporting: LAUNCHGUARD_AWS_URL or LAUNCHGUARD_SERVICE_ID is unset.'
+            exit 0
+          }
+          ./scripts/report-deployment.ps1 -LaunchGuardUrl $env:LAUNCHGUARD_URL `
+            -ServiceId $env:LAUNCHGUARD_SERVICE_ID -Version $env:APP_VERSION -CommitSha $env:GIT_SHA `
+            -Environment 'aws-dev' -ImageTag $env:IMAGE_TAG `
+            -ExternalId "github-aws-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT" `
+            -Description 'GitHub Actions ECS deployment'
+      - name: Upload deployment evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: aws-deployment-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/aws-deployment/deployed.tsv
+          if-no-files-found: warn
+          retention-days: 7

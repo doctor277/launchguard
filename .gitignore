@@ -18,3 +18,11 @@ dashboard/dist/
 dashboard/coverage/
 dashboard/test-results/
 dashboard/playwright-report/
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+terraform.tfvars
+*.auto.tfvars
+crash.log
+crash.*.log

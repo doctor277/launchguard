@@ -1,0 +1,25 @@
+# Every apply creates billable ALB and RDS baseline resources. Save and review a plan and current pricing first.
+aws_region = "us-east-1"
+allowed_ingress_cidrs = ["203.0.113.10/32"] # Replace with your current public IP; never use 0.0.0.0/0 casually.
+acknowledge_billable_resources = true
+
+enable_vpc_endpoints = false
+enable_nat_gateway   = true
+require_internet_egress = true # Required when probing public URLs; set false only for private/internal targets.
+enable_msk           = true
+image_tag            = "bootstrap" # Initial zero-count task definitions; GitHub deploys SHA-tagged revisions.
+
+desired_counts = {
+  backend              = 0
+  dashboard            = 0
+  probe-worker         = 0
+  payment-service      = 0
+  order-service        = 0
+  notification-service = 0
+}
+
+enable_github_oidc              = true
+create_github_oidc_provider      = true
+github_repository               = "doctor277/launchguard"
+github_environment              = "aws-dev"
+
