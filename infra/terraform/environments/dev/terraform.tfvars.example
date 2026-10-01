@@ -22,4 +22,3 @@ enable_github_oidc              = true
 create_github_oidc_provider      = true
 github_repository               = "doctor277/launchguard"
 github_environment              = "aws-dev"
-

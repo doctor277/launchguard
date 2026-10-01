@@ -20,4 +20,3 @@ output "demo_service_urls" {
     notification = "http://notification-service.${module.platform.service_discovery_namespace}:8083"
   }
 }
-

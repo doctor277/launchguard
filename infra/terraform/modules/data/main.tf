@@ -31,4 +31,3 @@ resource "aws_db_instance" "this" {
   enabled_cloudwatch_logs_exports = ["postgresql", "upgrade"]
   tags                            = { Name = var.name }
 }
-
