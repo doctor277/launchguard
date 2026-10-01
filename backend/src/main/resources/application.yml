@@ -102,6 +102,7 @@ logging:
 launchguard:
   kafka:
     partitions: ${KAFKA_TOPIC_PARTITIONS:6}
+    replication-factor: ${KAFKA_TOPIC_REPLICATION_FACTOR:1}
   dispatch:
     in-flight-ttl: ${PROBE_IN_FLIGHT_TTL:120s}
   incidents:

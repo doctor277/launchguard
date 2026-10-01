@@ -17,7 +17,7 @@ test('dashboard reflects real health, incidents, recovery, and deployment metada
     await expect((await request.post(`${demoUrl}/admin/recover`)).ok()).toBeTruthy()
     const service = await json<{ id: string }>(await request.post('/api/services', { data: { name: fixtureName, baseUrl: 'http://payment-service:8081', healthPath: '/health' } }))
     serviceId = service.id
-    await json(await request.post(`/api/services/${serviceId}/deployments`, { data: { version: '0.9.0-smoke', commitSha: 'a921fc7', description: 'V0.9 real dashboard smoke fixture', source: 'CI', environment: 'compose-smoke', imageTag: 'launchguard/payment-service:smoke', externalId: fixtureName } }))
+    await json(await request.post(`/api/services/${serviceId}/deployments`, { data: { version: '0.10.0-smoke', commitSha: 'a921fc7', description: 'V0.10 real dashboard smoke fixture', source: 'CI', environment: 'compose-smoke', imageTag: 'launchguard/payment-service:smoke', externalId: fixtureName } }))
 
     await page.goto('/')
     await expect(page).toHaveTitle(/LaunchGuard/)
@@ -29,7 +29,7 @@ test('dashboard reflects real health, incidents, recovery, and deployment metada
     await expect(row).toContainText('HEALTHY')
     await row.getByRole('link', { name: new RegExp(fixtureName) }).click()
     await expect(page.getByRole('heading', { name: fixtureName })).toBeVisible()
-    await expect(page.getByText('0.9.0-smoke').first()).toBeVisible()
+    await expect(page.getByText('0.10.0-smoke').first()).toBeVisible()
     await expect(page.getByText('compose-smoke').first()).toBeVisible()
     await expect(page.getByText('launchguard/payment-service:smoke').first()).toBeVisible()
 
@@ -38,7 +38,7 @@ test('dashboard reflects real health, incidents, recovery, and deployment metada
     await page.getByRole('button', { name: 'Refresh now' }).first().click()
     await expect(page.getByRole('heading', { name: 'Open incident' })).toBeVisible()
     await expect(page.getByText('DOWN').first()).toBeVisible()
-    await expect(page.getByText(/Deployment 0.9.0-smoke/)).toBeVisible()
+    await expect(page.getByText(/Deployment 0.10.0-smoke/)).toBeVisible()
 
     await expect((await request.post(`${demoUrl}/admin/recover`)).ok()).toBeTruthy()
     for (let i = 0; i < 2; i++) await json(await request.post(`/api/services/${serviceId}/check`))

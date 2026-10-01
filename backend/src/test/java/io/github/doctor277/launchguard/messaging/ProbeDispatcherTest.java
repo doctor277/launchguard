@@ -30,7 +30,7 @@ class ProbeDispatcherTest {
         var meters = new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
         var inFlight = new InFlightProbeRegistry(Clock.systemUTC(), new DispatchProperties(Duration.ofSeconds(120)));
         var dispatcher = new ProbeDispatcher(repository, inFlight, template, new EventJson(),
-                new KafkaMonitoringProperties("requests", "results", 6),
+                new KafkaMonitoringProperties("requests", "results", 6, (short) 1),
                 new MonitoringProperties(Duration.ofSeconds(2), Duration.ofSeconds(5)), Clock.systemUTC(),
                 new io.github.doctor277.launchguard.observability.BackendTelemetry(meters),
                 io.micrometer.observation.ObservationRegistry.NOOP);
@@ -62,7 +62,7 @@ class ProbeDispatcherTest {
         var json = new EventJson();
         var registry = new InFlightProbeRegistry(Clock.systemUTC(), new DispatchProperties(Duration.ofSeconds(120)));
         var dispatcher = new ProbeDispatcher(repository, registry, template, json,
-                new KafkaMonitoringProperties("requests", "results", 6),
+                new KafkaMonitoringProperties("requests", "results", 6, (short) 1),
                 new MonitoringProperties(Duration.ofSeconds(2), Duration.ofSeconds(5)),
                 Clock.systemUTC(), new io.github.doctor277.launchguard.observability.BackendTelemetry(
                         new io.micrometer.core.instrument.simple.SimpleMeterRegistry()), io.micrometer.observation.ObservationRegistry.NOOP);
@@ -104,7 +104,7 @@ class ProbeDispatcherTest {
         when(template.send(anyString(), anyInt(), anyString(), anyString())).thenReturn(publication);
         var registry = new InFlightProbeRegistry(Clock.systemUTC(), new DispatchProperties(Duration.ofSeconds(120)));
         var dispatcher = new ProbeDispatcher(repository, registry, template, new EventJson(),
-                new KafkaMonitoringProperties("requests", "results", 6),
+                new KafkaMonitoringProperties("requests", "results", 6, (short) 1),
                 new MonitoringProperties(Duration.ofSeconds(2), Duration.ofSeconds(5)), Clock.systemUTC(), new io.github.doctor277.launchguard.observability.BackendTelemetry(
                         new io.micrometer.core.instrument.simple.SimpleMeterRegistry()), io.micrometer.observation.ObservationRegistry.NOOP);
         dispatcher.dispatch(service.getId());
@@ -122,7 +122,7 @@ class ProbeDispatcherTest {
         when(template.send(anyString(), anyInt(), anyString(), anyString())).thenThrow(new IllegalStateException("Broker unavailable"));
         var registry = new InFlightProbeRegistry(Clock.systemUTC(), new DispatchProperties(Duration.ofSeconds(120)));
         var dispatcher = new ProbeDispatcher(repository, registry, template, new EventJson(),
-                new KafkaMonitoringProperties("requests", "results", 6),
+                new KafkaMonitoringProperties("requests", "results", 6, (short) 1),
                 new MonitoringProperties(Duration.ofSeconds(2), Duration.ofSeconds(5)), Clock.systemUTC(), new io.github.doctor277.launchguard.observability.BackendTelemetry(
                         new io.micrometer.core.instrument.simple.SimpleMeterRegistry()), io.micrometer.observation.ObservationRegistry.NOOP);
         assertThatThrownBy(() -> dispatcher.dispatch(service.getId())).isInstanceOf(ProbeDispatchException.class);

@@ -15,7 +15,7 @@ COPY demo-services/order-service/src demo-services/order-service/src
 RUN --mount=type=cache,target=/root/.m2,sharing=locked ./mvnw -B -pl demo-services/order-service -am package -DskipTests
 
 FROM eclipse-temurin:25-jre-alpine@sha256:3c0a9084927a221ccd1d007fcaf614465672c0af37aaa834c5184483afe56d61
-ARG APP_VERSION=0.9.0-SNAPSHOT
+ARG APP_VERSION=0.10.0-SNAPSHOT
 ARG GIT_SHA=unknown
 ARG BUILD_TIMESTAMP=unknown
 LABEL org.opencontainers.image.title="LaunchGuard order-service" \
@@ -25,6 +25,6 @@ LABEL org.opencontainers.image.title="LaunchGuard order-service" \
 WORKDIR /app
 RUN addgroup -S order && adduser -S order -G order
 USER order
-COPY --from=build /workspace/demo-services/order-service/target/order-service-0.9.0-SNAPSHOT.jar app.jar
+COPY --from=build /workspace/demo-services/order-service/target/order-service-0.10.0-SNAPSHOT.jar app.jar
 EXPOSE 8082
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]

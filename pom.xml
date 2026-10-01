@@ -12,7 +12,7 @@
 
     <groupId>io.github.doctor277.launchguard</groupId>
     <artifactId>launchguard-parent</artifactId>
-    <version>0.9.0-SNAPSHOT</version>
+    <version>0.10.0-SNAPSHOT</version>
     <packaging>pom</packaging>
     <name>LaunchGuard</name>
     <description>Service health monitoring platform</description>
@@ -29,5 +29,6 @@
     <properties>
         <java.version>25</java.version>
         <maven.compiler.release>25</maven.compiler.release>
+        <aws-msk-iam-auth.version>2.3.8</aws-msk-iam-auth.version>
     </properties>
 </project>

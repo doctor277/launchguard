@@ -1,5 +1,5 @@
 x-application-build-args: &application-build-args
-  APP_VERSION: ${APP_VERSION:-0.9.0-SNAPSHOT}
+  APP_VERSION: ${APP_VERSION:-0.10.0-SNAPSHOT}
   GIT_SHA: ${GIT_SHA:-unknown}
   BUILD_TIMESTAMP: ${BUILD_TIMESTAMP:-unknown}
 
@@ -52,7 +52,7 @@ services:
     restart: unless-stopped
 
   backend:
-    image: ${IMAGE_PREFIX:-launchguard}/backend:${IMAGE_TAG:-0.9.0-SNAPSHOT}
+    image: ${IMAGE_PREFIX:-launchguard}/backend:${IMAGE_TAG:-0.10.0-SNAPSHOT}
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -64,6 +64,7 @@ services:
       SERVER_PORT: 8080
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       KAFKA_TOPIC_PARTITIONS: ${KAFKA_TOPIC_PARTITIONS:-6}
+      KAFKA_TOPIC_REPLICATION_FACTOR: ${KAFKA_TOPIC_REPLICATION_FACTOR:-1}
       KAFKA_CONSUMER_CONCURRENCY: ${KAFKA_CONSUMER_CONCURRENCY:-6}
       PROBE_IN_FLIGHT_TTL: ${PROBE_IN_FLIGHT_TTL:-120s}
       MONITORING_INTERVAL: ${MONITORING_INTERVAL:-5s}
@@ -94,7 +95,7 @@ services:
     networks: [default, database]
 
   dashboard:
-    image: ${IMAGE_PREFIX:-launchguard}/dashboard:${IMAGE_TAG:-0.9.0-SNAPSHOT}
+    image: ${IMAGE_PREFIX:-launchguard}/dashboard:${IMAGE_TAG:-0.10.0-SNAPSHOT}
     build:
       context: ./dashboard
       args: *application-build-args
@@ -114,7 +115,7 @@ services:
     restart: unless-stopped
 
   probe-worker:
-    image: ${IMAGE_PREFIX:-launchguard}/probe-worker:${IMAGE_TAG:-0.9.0-SNAPSHOT}
+    image: ${IMAGE_PREFIX:-launchguard}/probe-worker:${IMAGE_TAG:-0.10.0-SNAPSHOT}
     build:
       context: .
       dockerfile: probe-worker/Dockerfile
@@ -123,6 +124,7 @@ services:
       SERVER_PORT: 8084
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       KAFKA_TOPIC_PARTITIONS: ${KAFKA_TOPIC_PARTITIONS:-6}
+      KAFKA_TOPIC_REPLICATION_FACTOR: ${KAFKA_TOPIC_REPLICATION_FACTOR:-1}
       KAFKA_CONSUMER_CONCURRENCY: ${KAFKA_CONSUMER_CONCURRENCY:-6}
       PROBE_WORKER_THREADS: ${PROBE_WORKER_THREADS:-4}
       PROBE_WORKER_QUEUE_CAPACITY: ${PROBE_WORKER_QUEUE_CAPACITY:-64}
@@ -146,7 +148,7 @@ services:
     restart: unless-stopped
 
   payment-service:
-    image: ${IMAGE_PREFIX:-launchguard}/payment-service:${IMAGE_TAG:-0.9.0-SNAPSHOT}
+    image: ${IMAGE_PREFIX:-launchguard}/payment-service:${IMAGE_TAG:-0.10.0-SNAPSHOT}
     build:
       context: .
       dockerfile: demo-services/payment-service/Dockerfile
@@ -167,7 +169,7 @@ services:
     restart: unless-stopped
 
   order-service:
-    image: ${IMAGE_PREFIX:-launchguard}/order-service:${IMAGE_TAG:-0.9.0-SNAPSHOT}
+    image: ${IMAGE_PREFIX:-launchguard}/order-service:${IMAGE_TAG:-0.10.0-SNAPSHOT}
     build:
       context: .
       dockerfile: demo-services/order-service/Dockerfile
@@ -188,7 +190,7 @@ services:
     restart: unless-stopped
 
   notification-service:
-    image: ${IMAGE_PREFIX:-launchguard}/notification-service:${IMAGE_TAG:-0.9.0-SNAPSHOT}
+    image: ${IMAGE_PREFIX:-launchguard}/notification-service:${IMAGE_TAG:-0.10.0-SNAPSHOT}
     build:
       context: .
       dockerfile: demo-services/notification-service/Dockerfile

@@ -8,7 +8,7 @@ COPY src ./src
 RUN npm run build
 
 FROM nginxinc/nginx-unprivileged:1.30.5-alpine@sha256:ed04ec1ff34502c339ee5c3ae3f855442398edc1d05591e2b98981dcbbd20b1e
-ARG APP_VERSION=0.9.0
+ARG APP_VERSION=0.10.0
 ARG GIT_SHA=unknown
 ARG BUILD_TIMESTAMP=unknown
 LABEL org.opencontainers.image.title="LaunchGuard dashboard" \

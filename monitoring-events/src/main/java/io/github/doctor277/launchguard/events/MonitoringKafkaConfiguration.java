@@ -26,10 +26,10 @@ public class MonitoringKafkaConfiguration {
     @Bean
     KafkaAdmin.NewTopics monitoringTopics(KafkaMonitoringProperties properties) {
         return new KafkaAdmin.NewTopics(
-                TopicBuilder.name(properties.requestsTopic()).partitions(properties.partitions()).replicas(1).build(),
-                TopicBuilder.name(properties.resultsTopic()).partitions(properties.partitions()).replicas(1).build(),
-                TopicBuilder.name(properties.requestsTopic() + ".dlt").partitions(properties.partitions()).replicas(1).build(),
-                TopicBuilder.name(properties.resultsTopic() + ".dlt").partitions(properties.partitions()).replicas(1).build());
+                TopicBuilder.name(properties.requestsTopic()).partitions(properties.partitions()).replicas(properties.replicationFactor()).build(),
+                TopicBuilder.name(properties.resultsTopic()).partitions(properties.partitions()).replicas(properties.replicationFactor()).build(),
+                TopicBuilder.name(properties.requestsTopic() + ".dlt").partitions(properties.partitions()).replicas(properties.replicationFactor()).build(),
+                TopicBuilder.name(properties.resultsTopic() + ".dlt").partitions(properties.partitions()).replicas(properties.replicationFactor()).build());
     }
 
     @Bean

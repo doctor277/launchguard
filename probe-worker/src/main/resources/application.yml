@@ -78,6 +78,7 @@ logging:
 launchguard:
   kafka:
     partitions: ${KAFKA_TOPIC_PARTITIONS:6}
+    replication-factor: ${KAFKA_TOPIC_REPLICATION_FACTOR:1}
   worker:
     threads: ${PROBE_WORKER_THREADS:4}
     queue-capacity: ${PROBE_WORKER_QUEUE_CAPACITY:64}
