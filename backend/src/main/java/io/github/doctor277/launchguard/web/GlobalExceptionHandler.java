@@ -35,9 +35,16 @@ public class GlobalExceptionHandler {
     }
 
     @ExceptionHandler({DuplicateServiceNameException.class, CheckAlreadyInProgressException.class,
-            DeploymentExternalIdConflictException.class, DataIntegrityViolationException.class})
+            DeploymentExternalIdConflictException.class})
     ResponseEntity<ApiError> handleConflict(RuntimeException exception, HttpServletRequest request) {
         return error(HttpStatus.CONFLICT, exception.getMessage(), request, List.of());
+    }
+
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    ResponseEntity<ApiError> handleDataIntegrity(DataIntegrityViolationException exception,
+                                                  HttpServletRequest request) {
+        log.warn("data_integrity_conflict method={} path={}", request.getMethod(), request.getRequestURI());
+        return error(HttpStatus.CONFLICT, "The request conflicts with existing data", request, List.of());
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
@@ -49,9 +56,15 @@ public class GlobalExceptionHandler {
         return error(HttpStatus.BAD_REQUEST, "Request validation failed", request, violations);
     }
 
-    @ExceptionHandler({IllegalArgumentException.class, HttpMessageNotReadableException.class})
+    @ExceptionHandler(IllegalArgumentException.class)
     ResponseEntity<ApiError> handleBadRequest(RuntimeException exception, HttpServletRequest request) {
         return error(HttpStatus.BAD_REQUEST, exception.getMessage(), request, List.of());
+    }
+
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    ResponseEntity<ApiError> handleUnreadable(HttpMessageNotReadableException exception,
+                                              HttpServletRequest request) {
+        return error(HttpStatus.BAD_REQUEST, "Request body is not valid JSON", request, List.of());
     }
 
     @ExceptionHandler(Exception.class)

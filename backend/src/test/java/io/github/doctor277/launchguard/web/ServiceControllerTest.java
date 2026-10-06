@@ -93,6 +93,21 @@ class ServiceControllerTest {
     }
 
     @Test
+    void rejectsTargetUrlContainingCredentials() throws Exception {
+        mockMvc.perform(post("/api/services")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "name": "payment-service",
+                                  "baseUrl": "https://user:secret@example.com",
+                                  "healthPath": "/health"
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.violations[0].field").value("baseUrl"));
+    }
+
+    @Test
     void rejectsInvalidMetricsWindowWithStructuredError() throws Exception {
         UUID id = UUID.randomUUID();
 

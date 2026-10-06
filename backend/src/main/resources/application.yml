@@ -1,4 +1,11 @@
 spring:
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${OIDC_ISSUER_URI:http://localhost:8085/realms/launchguard}
+          jwk-set-uri: ${OIDC_JWK_SET_URI:http://localhost:8085/realms/launchguard/protocol/openid-connect/certs}
+          audiences: ${OIDC_AUDIENCE:launchguard-api}
   kafka:
     template:
       observation-enabled: true
@@ -48,6 +55,7 @@ spring:
 
 server:
   port: ${SERVER_PORT:8080}
+  forward-headers-strategy: framework
 
 management:
   # The OpenTelemetry starter includes an OTLP meter registry; use Prometheus ONLY for metrics.
@@ -100,6 +108,14 @@ logging:
       console: logstash
 
 launchguard:
+  security:
+    roles-claim: ${OIDC_ROLES_CLAIM:roles}
+    allowed-origins: ${SECURITY_ALLOWED_ORIGINS:}
+    hsts-enabled: ${SECURITY_HSTS_ENABLED:false}
+    rate-limit:
+      enabled: ${SECURITY_RATE_LIMIT_ENABLED:true}
+      requests: ${SECURITY_RATE_LIMIT_REQUESTS:60}
+      window: ${SECURITY_RATE_LIMIT_WINDOW:1m}
   kafka:
     partitions: ${KAFKA_TOPIC_PARTITIONS:6}
     replication-factor: ${KAFKA_TOPIC_REPLICATION_FACTOR:1}
