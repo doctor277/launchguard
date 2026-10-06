@@ -1,5 +1,5 @@
 x-application-build-args: &application-build-args
-  APP_VERSION: ${APP_VERSION:-0.10.0-SNAPSHOT}
+  APP_VERSION: ${APP_VERSION:-1.0.0}
   GIT_SHA: ${GIT_SHA:-unknown}
   BUILD_TIMESTAMP: ${BUILD_TIMESTAMP:-unknown}
 
@@ -51,8 +51,33 @@ services:
       - no-new-privileges:true
     restart: unless-stopped
 
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7.0@sha256:0f198be292568439d700cdbfb893e69a6009bb43a94a06a945b1d3d506c76b13
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: local-admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-local-keycloak-admin-demo-only}
+      KC_HEALTH_ENABLED: 'true'
+      KC_HOSTNAME: http://localhost:${KEYCLOAK_PORT:-8085}
+      DASHBOARD_PUBLIC_URL: http://localhost:${DASHBOARD_PORT:-3001}
+      LAUNCHGUARD_AUTOMATION_CLIENT_SECRET: ${OIDC_AUTOMATION_CLIENT_SECRET:-local-automation-secret-demo-only}
+    ports:
+      - "127.0.0.1:${KEYCLOAK_PORT:-8085}:8080"
+    volumes:
+      - ./identity/keycloak/launchguard-realm.json:/opt/keycloak/data/import/launchguard-realm.json:ro
+    healthcheck:
+      test: ["CMD", "/bin/bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9000; printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3; grep -q '200 OK' <&3"]
+      interval: 5s
+      timeout: 4s
+      retries: 20
+      start_period: 30s
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
   backend:
-    image: ${IMAGE_PREFIX:-launchguard}/backend:${IMAGE_TAG:-0.10.0-SNAPSHOT}
+    image: ${IMAGE_PREFIX:-launchguard}/backend:${IMAGE_TAG:-1.0.0}
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -76,12 +101,19 @@ services:
       OTEL_TRACING_EXPORT_ENABLED: 'true'
       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
       TRACING_SAMPLING_PROBABILITY: ${TRACING_SAMPLING_PROBABILITY:-1.0}
+      OIDC_ISSUER_URI: http://localhost:${KEYCLOAK_PORT:-8085}/realms/launchguard
+      OIDC_JWK_SET_URI: http://keycloak:8080/realms/launchguard/protocol/openid-connect/certs
+      OIDC_AUDIENCE: launchguard-api
+      OIDC_ROLES_CLAIM: roles
+      SECURITY_ALLOWED_ORIGINS: http://localhost:5173
     ports:
       - "127.0.0.1:${LAUNCHGUARD_PORT:-8080}:8080"
     depends_on:
       postgres:
         condition: service_healthy
       kafka:
+        condition: service_healthy
+      keycloak:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "-T", "2", "-O", "-", "http://127.0.0.1:8080/actuator/health"]
@@ -91,18 +123,29 @@ services:
       start_period: 45s
     security_opt:
       - no-new-privileges:true
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
     restart: unless-stopped
     networks: [default, database]
 
   dashboard:
-    image: ${IMAGE_PREFIX:-launchguard}/dashboard:${IMAGE_TAG:-0.10.0-SNAPSHOT}
+    image: ${IMAGE_PREFIX:-launchguard}/dashboard:${IMAGE_TAG:-1.0.0}
     build:
       context: ./dashboard
       args: *application-build-args
+    environment:
+      OIDC_ISSUER_URI: http://localhost:${KEYCLOAK_PORT:-8085}/realms/launchguard
+      OIDC_CLIENT_ID: launchguard-dashboard
+      OIDC_AUDIENCE: launchguard-api
+      OIDC_CONNECT_SRC: http://localhost:${KEYCLOAK_PORT:-8085}
     ports:
       - "127.0.0.1:${DASHBOARD_PORT:-3001}:8080"
     depends_on:
       backend:
+        condition: service_healthy
+      keycloak:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "-T", "2", "-O", "-", "http://127.0.0.1:8080/healthz"]
@@ -112,10 +155,15 @@ services:
       start_period: 5s
     security_opt:
       - no-new-privileges:true
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+      - /etc/nginx/conf.d:rw,noexec,nosuid,size=1m,uid=101,gid=101,mode=0755
     restart: unless-stopped
 
   probe-worker:
-    image: ${IMAGE_PREFIX:-launchguard}/probe-worker:${IMAGE_TAG:-0.10.0-SNAPSHOT}
+    image: ${IMAGE_PREFIX:-launchguard}/probe-worker:${IMAGE_TAG:-1.0.0}
     build:
       context: .
       dockerfile: probe-worker/Dockerfile
@@ -145,10 +193,14 @@ services:
       start_period: 45s
     security_opt:
       - no-new-privileges:true
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
     restart: unless-stopped
 
   payment-service:
-    image: ${IMAGE_PREFIX:-launchguard}/payment-service:${IMAGE_TAG:-0.10.0-SNAPSHOT}
+    image: ${IMAGE_PREFIX:-launchguard}/payment-service:${IMAGE_TAG:-1.0.0}
     build:
       context: .
       dockerfile: demo-services/payment-service/Dockerfile
@@ -166,10 +218,14 @@ services:
       start_period: 30s
     security_opt:
       - no-new-privileges:true
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
     restart: unless-stopped
 
   order-service:
-    image: ${IMAGE_PREFIX:-launchguard}/order-service:${IMAGE_TAG:-0.10.0-SNAPSHOT}
+    image: ${IMAGE_PREFIX:-launchguard}/order-service:${IMAGE_TAG:-1.0.0}
     build:
       context: .
       dockerfile: demo-services/order-service/Dockerfile
@@ -187,10 +243,14 @@ services:
       start_period: 30s
     security_opt:
       - no-new-privileges:true
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
     restart: unless-stopped
 
   notification-service:
-    image: ${IMAGE_PREFIX:-launchguard}/notification-service:${IMAGE_TAG:-0.10.0-SNAPSHOT}
+    image: ${IMAGE_PREFIX:-launchguard}/notification-service:${IMAGE_TAG:-1.0.0}
     build:
       context: .
       dockerfile: demo-services/notification-service/Dockerfile
@@ -208,6 +268,10 @@ services:
       start_period: 30s
     security_opt:
       - no-new-privileges:true
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
     restart: unless-stopped
 
   tempo:

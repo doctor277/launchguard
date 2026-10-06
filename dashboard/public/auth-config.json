@@ -1,0 +1,6 @@
+{
+  "issuer": "http://localhost:8085/realms/launchguard",
+  "clientId": "launchguard-dashboard",
+  "audience": "launchguard-api",
+  "scope": "openid profile email"
+}

@@ -1,10 +1,11 @@
 import { useCallback, useState } from 'react'
-import { loadDeploymentMetrics, loadDetail } from '../api/client'
+import { errorMessage, loadDeploymentMetrics, loadDetail, triggerHealthCheck } from '../api/client'
 import type { Deployment, Incident, MetricsWindow, Reliability, Resource } from '../api/types'
 import { usePolling } from '../hooks/usePolling'
 import { Refresh } from '../components/Refresh'
 import { Timeline } from '../components/Timeline'
 import { availability, dateTime, latency, Loading, Notice, Pagination, ResourceView, Section, Status } from '../components/ui'
+import { Authorized } from '../auth/AuthContext'
 
 function ReliabilityStats({ metrics }: { metrics: Reliability }) {
   return <dl className="reliability-grid"><div><dt>Availability</dt><dd>{availability(metrics.totalChecks, metrics.availabilityPercentage)}</dd></div><div><dt>Total checks</dt><dd>{metrics.totalChecks.toLocaleString()}</dd></div><div><dt>Healthy / failed</dt><dd>{metrics.healthyChecks} / {metrics.failedChecks}</dd></div><div><dt>Avg. response</dt><dd>{latency(metrics.averageResponseTimeMs)}</dd></div><div><dt>Min. / max. response</dt><dd>{latency(metrics.minResponseTimeMs)} / {latency(metrics.maxResponseTimeMs)}</dd></div></dl>
@@ -26,13 +27,29 @@ export function ServiceDetail({ id }: { id: string }) {
   const [deploymentsPage, setDeploymentsPage] = useState(0)
   const [incidentsPage, setIncidentsPage] = useState(0)
   const [selectedDeployment, setSelectedDeployment] = useState<string | null>(null)
+  const [checking, setChecking] = useState(false)
+  const [actionNotice, setActionNotice] = useState<{ error?: boolean; message: string } | null>(null)
   const loader = useCallback((signal: AbortSignal) => loadDetail(id, { window, checksPage, deploymentsPage, incidentsPage }, signal), [id, window, checksPage, deploymentsPage, incidentsPage])
   const poll = usePolling(`detail:${id}:${window}:${checksPage}:${deploymentsPage}:${incidentsPage}`, loader)
   const data = poll.data
   const deploymentId = selectedDeployment ?? data?.service.currentDeployment?.id
+  const checkNow = async () => {
+    setChecking(true)
+    setActionNotice(null)
+    try {
+      await triggerHealthCheck(id, new AbortController().signal)
+      setActionNotice({ message: 'Health check completed.' })
+      poll.refresh()
+    } catch (error) {
+      setActionNotice({ error: true, message: errorMessage(error) })
+    } finally {
+      setChecking(false)
+    }
+  }
   return <>
     <a className="breadcrumb" href="#/">← All services</a>
-    <div className="page-heading"><div><h1>{data?.service.name ?? 'Service detail'}</h1><p>{data ? `${data.service.baseUrl}${data.service.healthPath}` : 'Loading service information'}</p></div><Refresh loading={poll.loading} updatedAt={poll.updatedAt} onRefresh={poll.refresh} /></div>
+    <div className="page-heading"><div><h1>{data?.service.name ?? 'Service detail'}</h1><p>{data ? `${data.service.baseUrl}${data.service.healthPath}` : 'Loading service information'}</p></div><div className="page-actions"><Authorized roles={['OPERATOR', 'ADMIN']}><button onClick={() => void checkNow()} disabled={checking}>{checking ? 'Checking…' : 'Run health check'}</button></Authorized><Refresh loading={poll.loading} updatedAt={poll.updatedAt} onRefresh={poll.refresh} /></div></div>
+    {actionNotice ? <Notice error={actionNotice.error}>{actionNotice.message}</Notice> : null}
     {poll.error ? <Notice error>{poll.error}{data ? ' Showing the last successful refresh; data may be stale.' : ''}</Notice> : null}
     {!data && poll.loading ? <Loading label="Loading service detail…" /> : null}
     {data ? <>

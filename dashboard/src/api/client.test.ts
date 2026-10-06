@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { get, mapLimited } from './client'
 import { json } from '../test/fixtures'
+import { configureApiSession } from '../auth/session'
 
 describe('API client', () => {
   it('returns null for HTTP 204 rather than attempting JSON parsing', async () => {
@@ -10,6 +11,34 @@ describe('API client', () => {
   it('preserves a structured backend error', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ message: 'Invalid window' }, 400)))
     await expect(get('/services/id/metrics', new AbortController().signal)).rejects.toMatchObject({ status: 400, message: 'Invalid window' })
+  })
+  it('attaches the bearer access token without persisting it in localStorage', async () => {
+    const fetch = vi.fn().mockResolvedValue(json([]))
+    vi.stubGlobal('fetch', fetch)
+    configureApiSession('access-token', vi.fn())
+    await get('/services', new AbortController().signal)
+    expect(fetch).toHaveBeenCalledWith('/api/services', expect.objectContaining({
+      headers: expect.objectContaining({ Authorization: 'Bearer access-token' }),
+    }))
+    expect(window.localStorage.length).toBe(0)
+  })
+  it('expires the local session on HTTP 401', async () => {
+    const expired = vi.fn()
+    configureApiSession('expired-token', expired)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ message: 'decoder detail' }, 401)))
+    await expect(get('/services', new AbortController().signal)).rejects.toMatchObject({
+      status: 401, message: 'Your session has expired. Sign in again.',
+    })
+    expect(expired).toHaveBeenCalledOnce()
+  })
+  it('preserves a structured HTTP 403 without expiring the session', async () => {
+    const expired = vi.fn()
+    configureApiSession('viewer-token', expired)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ message: 'Operator role required' }, 403)))
+    await expect(get('/services', new AbortController().signal)).rejects.toMatchObject({
+      status: 403, message: 'Operator role required',
+    })
+    expect(expired).not.toHaveBeenCalled()
   })
   it('handles non-JSON proxy errors', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('<html>Bad gateway</html>', { status: 502 })))

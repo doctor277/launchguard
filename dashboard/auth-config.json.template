@@ -1,0 +1,6 @@
+{
+  "issuer": "${OIDC_ISSUER_URI}",
+  "clientId": "${OIDC_CLIENT_ID}",
+  "audience": "${OIDC_AUDIENCE}",
+  "scope": "openid profile email"
+}

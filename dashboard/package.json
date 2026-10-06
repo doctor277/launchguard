@@ -1,9 +1,11 @@
 {
   "name": "launchguard-dashboard",
-  "version": "0.10.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
-  "engines": { "node": "^22.22.2 || ^24.15.0 || >=26.0.0" },
+  "engines": {
+    "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
+  },
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "typecheck": "tsc --noEmit",
@@ -13,6 +15,7 @@
     "test:smoke": "playwright test"
   },
   "dependencies": {
+    "oidc-client-ts": "3.5.0",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },

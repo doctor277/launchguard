@@ -1,0 +1,139 @@
+{
+  "realm": "launchguard",
+  "displayName": "LaunchGuard Local Development",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "rememberMe": false,
+  "bruteForceProtected": true,
+  "roles": {
+    "realm": [
+      { "name": "VIEWER", "description": "Read monitoring, reliability, deployment, and incident data" },
+      { "name": "OPERATOR", "description": "VIEWER permissions plus operational checks and deployment registration" },
+      { "name": "ADMIN", "description": "OPERATOR permissions plus service administration" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "launchguard-dashboard",
+      "name": "LaunchGuard dashboard",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": ["${DASHBOARD_PUBLIC_URL}/*"],
+      "webOrigins": ["${DASHBOARD_PUBLIC_URL}"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "${DASHBOARD_PUBLIC_URL}/*"
+      },
+      "protocolMappers": [
+        {
+          "name": "launchguard-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "launchguard-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        },
+        {
+          "name": "launchguard-roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "access.token.claim": "true",
+            "id.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "launchguard-automation",
+      "name": "LaunchGuard local automation",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "${LAUNCHGUARD_AUTOMATION_CLIENT_SECRET}",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "protocolMappers": [
+        {
+          "name": "launchguard-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "launchguard-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        },
+        {
+          "name": "launchguard-roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "launchguard-viewer",
+      "firstName": "Local",
+      "lastName": "Viewer",
+      "email": "viewer@launchguard.local",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [{ "type": "password", "value": "viewer-demo-only", "temporary": false }],
+      "realmRoles": ["VIEWER"]
+    },
+    {
+      "username": "launchguard-operator",
+      "firstName": "Local",
+      "lastName": "Operator",
+      "email": "operator@launchguard.local",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [{ "type": "password", "value": "operator-demo-only", "temporary": false }],
+      "realmRoles": ["OPERATOR", "VIEWER"]
+    },
+    {
+      "username": "launchguard-admin",
+      "firstName": "Local",
+      "lastName": "Administrator",
+      "email": "admin@launchguard.local",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [{ "type": "password", "value": "admin-demo-only", "temporary": false }],
+      "realmRoles": ["ADMIN", "OPERATOR", "VIEWER"]
+    },
+    {
+      "username": "service-account-launchguard-automation",
+      "enabled": true,
+      "serviceAccountClientId": "launchguard-automation",
+      "realmRoles": ["ADMIN", "OPERATOR", "VIEWER"]
+    }
+  ]
+}

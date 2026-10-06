@@ -2,7 +2,17 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
 import { ServiceDetail } from './ServiceDetail'
-import { DEPLOYMENT_ID, deployment, json, mockApi, page, service, SERVICE_ID } from '../test/fixtures'
+import { check, DEPLOYMENT_ID, deployment, json, mockApi, page, service, SERVICE_ID } from '../test/fixtures'
+import { AuthContext } from '../auth/AuthContext'
+import type { AuthState, LaunchGuardRole } from '../auth/types'
+
+function authenticated(role: LaunchGuardRole): AuthState {
+  return {
+    loading: false, authenticated: true, sessionExpired: false, error: null,
+    user: { subject: role.toLowerCase(), displayName: role, roles: new Set([role]) },
+    signIn: async () => {}, signOut: async () => {},
+  }
+}
 
 describe('service detail', () => {
   it('renders service fields, reliability, checks, and a real-data chart', async () => {
@@ -79,5 +89,18 @@ describe('service detail', () => {
     mockApi({ [`/api/services/${SERVICE_ID}`]: json({ message: 'Service not found' }, 404) })
     render(<ServiceDetail id={SERVICE_ID} />)
     expect(await screen.findByRole('alert')).toHaveTextContent('Service not found')
+  })
+  it('hides operational controls from a viewer', async () => {
+    mockApi()
+    render(<AuthContext.Provider value={authenticated('VIEWER')}><ServiceDetail id={SERVICE_ID} /></AuthContext.Provider>)
+    await screen.findByRole('heading', { name: 'payment-service' })
+    expect(screen.queryByRole('button', { name: 'Run health check' })).not.toBeInTheDocument()
+  })
+  it('lets an operator run an authenticated health check', async () => {
+    const fetch = mockApi({ [`/api/services/${SERVICE_ID}/check`]: check })
+    render(<AuthContext.Provider value={authenticated('OPERATOR')}><ServiceDetail id={SERVICE_ID} /></AuthContext.Provider>)
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Run health check' }))
+    expect(await screen.findByText('Health check completed.')).toBeVisible()
+    expect(fetch).toHaveBeenCalledWith(`/api/services/${SERVICE_ID}/check`, expect.objectContaining({ method: 'POST' }))
   })
 })

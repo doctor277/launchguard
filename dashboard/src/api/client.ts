@@ -2,25 +2,48 @@ import type {
   Deployment, DeploymentMetrics, HealthCheck, Incident, IncidentMetrics, MetricsWindow,
   Page, Resource, Service, ServiceMetrics, TimelinePoint,
 } from './types'
+import { currentAccessToken, notifyUnauthorized } from '../auth/session'
 
 export class ApiError extends Error {
   constructor(message: string, readonly status: number) { super(message); this.name = 'ApiError' }
 }
 
 export async function get<T>(path: string, signal: AbortSignal): Promise<T> {
+  return request<T>('GET', path, signal)
+}
+
+export async function post<T>(path: string, signal: AbortSignal, body?: unknown): Promise<T> {
+  return request<T>('POST', path, signal, body)
+}
+
+async function request<T>(method: 'GET' | 'POST', path: string, signal: AbortSignal, body?: unknown): Promise<T> {
   const controller = new AbortController()
   const abort = () => controller.abort()
   signal.addEventListener('abort', abort, { once: true })
   if (signal.aborted) controller.abort()
   const timeout = setTimeout(abort, 10_000)
   try {
-    const response = await fetch(`/api${path}`, { signal: controller.signal, headers: { Accept: 'application/json' }, cache: 'no-store' })
+    const token = currentAccessToken()
+    const headers: Record<string, string> = { Accept: 'application/json' }
+    if (token) headers.Authorization = `Bearer ${token}`
+    if (body !== undefined) headers['Content-Type'] = 'application/json'
+    const response = await fetch(`/api${path}`, {
+      method,
+      signal: controller.signal,
+      headers,
+      cache: 'no-store',
+      body: body === undefined ? undefined : JSON.stringify(body),
+    })
     if (!response.ok) {
       let message = `Request failed (HTTP ${response.status})`
       try {
         const body: unknown = await response.json()
         if (typeof body === 'object' && body !== null && 'message' in body && typeof body.message === 'string') message = body.message
       } catch { /* A proxy's HTML error is not a structured backend error. */ }
+      if (response.status === 401) {
+        notifyUnauthorized()
+        message = 'Your session has expired. Sign in again.'
+      }
       throw new ApiError(message, response.status)
     }
     if (response.status === 204) return null as T
@@ -85,4 +108,8 @@ export async function loadDetail(id: string, selection: DetailSelection, signal:
 export type DetailData = Awaited<ReturnType<typeof loadDetail>>
 export function loadDeploymentMetrics(serviceId: string, deploymentId: string, signal: AbortSignal) {
   return get<DeploymentMetrics>(`${scope(serviceId)}/deployments/${encodeURIComponent(deploymentId)}/metrics`, signal)
+}
+
+export function triggerHealthCheck(serviceId: string, signal: AbortSignal) {
+  return post<HealthCheck>(`${scope(serviceId)}/check`, signal)
 }
