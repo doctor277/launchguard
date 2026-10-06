@@ -8,9 +8,11 @@ The default cloud design keeps LaunchGuard's Kafka semantics and uses managed AW
 
 ```mermaid
 flowchart TB
-    Internet -->|explicit CIDR only| ALB[Public Application Load Balancer]
+    Browser -->|Authorization Code + PKCE| IdP[External OIDC provider]
+    Browser -->|explicit CIDR only| ALB[Public Application Load Balancer]
     ALB -->|/| Dashboard[Dashboard - ECS Fargate]
-    ALB -->|/api/*| Backend[Backend - ECS Fargate]
+    ALB -->|Bearer JWT on /api/*| Backend[Backend - ECS Fargate]
+    Backend -->|discovery / JWKs| IdP
     Backend --> RDS[(Private RDS PostgreSQL)]
     Backend --> MSK[Optional MSK Serverless - IAM/TLS]
     MSK --> Worker[Probe worker - ECS Fargate]
@@ -43,7 +45,7 @@ Terraform is split into `network`, `ecr`, `data`, `messaging`, `platform`, and `
 - Private Cloud Map DNS for the three demo services. The probe worker reaches them without public endpoints.
 - An optional GitHub OIDC provider and narrowly scoped deploy role for ECR push, ECS task-definition registration/service update, and passing only LaunchGuard task roles.
 
-The ALB is the only public resource. Its security group has **no ingress by default**. Set `allowed_ingress_cidrs` to specific client `/32` addresses for a demo; do not use `0.0.0.0/0` casually because LaunchGuard has no authentication yet. Backend management routes, worker management, PostgreSQL, MSK, and demo services are not ALB routes and have no public addresses.
+The ALB is the only application resource with public ingress. Its security group has **no ingress by default**. Set `allowed_ingress_cidrs` to specific client `/32` addresses for a demo; do not use `0.0.0.0/0` casually. OIDC protects application APIs but does not replace a narrow network boundary. Backend management routes, worker management, PostgreSQL, MSK, and demo services are not ALB routes and have no public addresses. The OIDC provider is external to this module and Keycloak is not deployed or exposed by the ALB.
 
 ## Cost model and safe defaults
 
@@ -81,6 +83,20 @@ cp terraform.tfvars.example terraform.tfvars
 ```
 
 The `.gitignore` rules exclude `.terraform/`, state, crash logs, binary plan files, `terraform.tfvars`, and `*.auto.tfvars`. Keep account-specific values and all sensitive data out of Git.
+
+Configure a standards-compliant provider before running backend or dashboard tasks:
+
+```hcl
+oidc_issuer_uri           = "https://id.example.com/realms/launchguard"
+oidc_dashboard_client_id = "launchguard-dashboard"
+oidc_audience             = "launchguard-api"
+oidc_roles_claim          = "roles"
+oidc_connect_src          = "https://id.example.com"
+# Optional when issuer discovery is not the backend-reachable key URL:
+# oidc_jwk_set_uri = "https://id.example.com/realms/launchguard/protocol/openid-connect/certs"
+```
+
+The dashboard client is public and has no secret. Register the final `application_url` as its login callback and logout origin. The provider must issue the configured audience and roles claim. Terraform blocks nonzero backend/dashboard counts when the issuer, dashboard client ID, CSP connect origin, or ACM certificate is missing. If discovery/JWKs are Internet-only, private backend tasks require NAT; a private provider can instead be reached through operator-managed private connectivity.
 
 Initialize the S3 backend with native lock-file support:
 
@@ -122,7 +138,7 @@ If MSK is disabled, backend and probe-worker desired counts must remain zero unl
 
 ### HTTPS
 
-Without `certificate_arn`, the restricted demo endpoint uses HTTP. Supply a validated ACM certificate ARN to add an HTTPS listener using the TLS 1.3/1.2 policy and redirect HTTP to HTTPS. DNS/ACM issuance is deliberately outside this milestone.
+With zero application task counts, `certificate_arn` may remain unset while the baseline architecture is planned. Running the authenticated backend or dashboard requires a validated ACM certificate ARN; this adds an HTTPS listener using the TLS 1.3/1.2 policy, redirects HTTP to HTTPS, and enables application HSTS. Non-loopback OIDC issuers must also use HTTPS. DNS/ACM issuance remains operator-managed.
 
 ## GitHub OIDC and deployment
 
@@ -142,7 +158,7 @@ After apply:
 1. Create a GitHub environment named `aws-dev` and require a reviewer.
 2. Add environment variable `AWS_REGION` with the Terraform region.
 3. Add environment variable `AWS_DEPLOY_ROLE_ARN` from `terraform output -raw github_deploy_role_arn`.
-4. Optionally add `LAUNCHGUARD_AWS_URL` and `LAUNCHGUARD_SERVICE_ID` after registration. Reporting often cannot reach a CIDR-restricted ALB from a hosted runner; leaving either unset produces an explicit skip.
+4. For optional deployment reporting, add `LAUNCHGUARD_AWS_URL`, `LAUNCHGUARD_SERVICE_ID`, `OIDC_AUTOMATION_TOKEN_ENDPOINT`, and `OIDC_AUTOMATION_CLIENT_ID` as environment variables, plus `OIDC_AUTOMATION_CLIENT_SECRET` as an environment secret. Reporting often cannot reach a CIDR-restricted ALB from a hosted runner; incomplete configuration produces an explicit skip.
 5. Manually run **AWS deployment** from `main` and type `DEPLOY` exactly.
 
 The workflow first reuses the complete CI workflow. Only after it passes does GitHub request a short-lived OIDC token, build all six containers, tag them `sha-<40-character commit>`, push them to immutable ECR repositories, register new task-definition revisions, update all ECS services, wait for stabilization, and save deployment evidence. It contains no long-lived AWS key inputs.
@@ -157,24 +173,25 @@ After the six services are running, get the URL:
 terraform output -raw application_url
 ```
 
-Register the private demo targets through the ALB API (replace `APP_URL`):
+Obtain an ADMIN token from the configured provider, then register the private demo targets through the ALB API (replace `APP_URL` and `ACCESS_TOKEN`):
 
 ```bash
 curl -X POST "$APP_URL/api/services" -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
   -d '{"name":"payment-service","baseUrl":"http://payment-service.dev-launchguard.internal:8081","healthPath":"/health"}'
 ```
 
 Repeat for `order-service` on 8082 and `notification-service` on 8083. Then verify:
 
 - `GET APP_URL/` returns the dashboard.
-- `GET APP_URL/api/services` returns registered DTOs.
+- Authenticated `GET APP_URL/api/services` returns registered DTOs; the same request without a token returns 401.
 - ECS shows six stable services and healthy ALB targets.
 - RDS reports private networking and Flyway history contains V1-V5; Flyway remains the only schema mechanism.
 - MSK topics exist with six partitions and replication factor 3.
 - CloudWatch log groups contain structured JSON with trace/span fields when sampled.
 - RDS, MSK, worker, demo, and management endpoints are not publicly reachable.
 
-The ALB rule matches only `/api` and `/api/*`; `/actuator/*` therefore remains on the dashboard target and never reaches the backend. Browser API calls remain same-origin through the ALB and require no CORS exception.
+The ALB rule matches only `/api` and `/api/*`; `/actuator/*` therefore remains on the dashboard target and never reaches the backend. Browser API calls remain same-origin through the ALB and require no CORS exception. The dashboard's Content Security Policy allows only the configured provider origin in addition to the application origin.
 
 Prometheus, Grafana, the OpenTelemetry Collector, and Tempo remain part of the local Compose lab. ECS trace export is optional through `otel_exporter_endpoint`; no managed cloud tracing backend is provisioned.
 
@@ -193,8 +210,8 @@ Confirm the ALB, NAT/endpoints, RDS, MSK, ECS tasks/services, log groups, and EC
 ## Limitations
 
 - The design is a single-region development deployment, not a production architecture or disaster-recovery plan.
-- LaunchGuard has no authentication, authorization, tenant isolation, WAF policy, or production TLS/domain automation. CIDR restriction is the demo boundary.
+- LaunchGuard has OIDC authentication and application RBAC, but no tenant isolation, WAF policy, provider provisioning, or production TLS/domain automation. CIDR restriction remains a second demo boundary.
 - RDS is single-AZ by default; MSK capacity/retention and high-availability performance are not production tuned.
-- Application autoscaling, scheduled scale-to-zero, alarms, managed Prometheus/Grafana, and managed tracing are outside V0.10.
+- Application autoscaling, scheduled scale-to-zero, alarms, managed Prometheus/Grafana, and managed tracing are outside V1.0.
 - Terraform has been validated without an AWS account; no resource existence, quota, plan, apply, or live-cloud health claim is made until an operator performs those steps.
 - PostgreSQL engine-version and instance-class availability are regional. Confirm `database_engine_version` and every selected resource with a real saved AWS plan before apply.

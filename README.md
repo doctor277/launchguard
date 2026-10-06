@@ -1,89 +1,66 @@
 # LaunchGuard
 
-[![CI](https://github.com/doctor277/launchguard/actions/workflows/ci.yml/badge.svg)](https://github.com/doctor277/launchguard/actions/workflows/ci.yml) [![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Java 25](https://img.shields.io/badge/Java-25-orange.svg)](https://openjdk.org/projects/jdk/25/)
+[![CI](https://github.com/doctor277/launchguard/actions/workflows/ci.yml/badge.svg)](https://github.com/doctor277/launchguard/actions/workflows/ci.yml) [![CodeQL](https://github.com/doctor277/launchguard/actions/workflows/codeql.yml/badge.svg)](https://github.com/doctor277/launchguard/actions/workflows/codeql.yml) [![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Java 25](https://img.shields.io/badge/Java-25-orange.svg)](https://openjdk.org/projects/jdk/25/)
 
-LaunchGuard is an event-driven service monitoring and deployment reliability platform built with Java, Kafka, and PostgreSQL. Its React dashboard presents service health, reliability, incidents, and deployments, while Prometheus, Grafana, OpenTelemetry, and Tempo provide platform metrics and distributed tracing.
+LaunchGuard is an event-driven service monitoring and deployment reliability platform. It combines a Spring Boot API, Kafka probe pipeline, PostgreSQL reliability history, and an authenticated React dashboard with Prometheus, Grafana, OpenTelemetry, and Tempo observability.
 
 ![LaunchGuard application dashboard](docs/images/launchguard-dashboard.png)
 
 ## Features
 
-- Scheduled and on-demand HTTP health checks, with asynchronous Kafka dispatch and a separate probe worker.
-- PostgreSQL-backed check history, availability and latency statistics, timelines, and paginated APIs.
-- Deployment tracking that preserves the deployment associated with each check and incident.
-- Automatic incident detection and recovery using configurable consecutive-failure/healthy thresholds.
-- Responsive application dashboard with service overview, reliability timelines, check history, incidents, and deployment context.
-- Transactional result deduplication, bounded worker concurrency, consumer retries, and dead-letter topics.
-- Provisioned observability dashboards, distributed traces, and structured correlation logs.
-- Three independent demo services with failure/latency controls, plus CI validation and opt-in delivery demonstrations.
-- Modular Terraform for an explicitly approved AWS dev deployment using ECR, ECS Fargate, ALB, RDS, optional MSK Serverless, CloudWatch, and GitHub OIDC.
+- Scheduled, synchronous, and asynchronous HTTP health checks through a dedicated Kafka probe worker.
+- Availability, latency, timeline, deployment, and incident history backed by PostgreSQL aggregate queries.
+- Automatic incident opening and recovery with deployment correlation and at-least-once result deduplication.
+- OIDC Authorization Code with PKCE, JWT resource-server validation, and `VIEWER` / `OPERATOR` / `ADMIN` authorization.
+- Authenticated React dashboard with role-aware operational controls and secure session-expiry handling.
+- Prometheus metrics, provisioned Grafana dashboards, distributed OpenTelemetry traces, Tempo, and structured correlation logs.
+- Reproducible 13-service Docker Compose lab with local Keycloak and three controllable demo services.
+- CI, CodeQL, Dependabot, CycloneDX SBOMs, and optional Terraform/AWS ECS architecture.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    Browser[Browser] --> Dashboard[React dashboard / Nginx]
-    Dashboard -->|relative /api proxy| Backend[Backend]
-    Client[REST API client / scheduler] --> Backend
-    subgraph Kafka[Kafka]
-        Requests[Probe requests]
-        Results[Probe results]
-    end
-    Backend --> Requests
+    User[Browser] -->|Authorization Code + PKCE| IdP[OIDC provider]
+    User --> Dashboard[React dashboard / Nginx]
+    Dashboard -->|Bearer JWT via /api| Backend[Spring Boot backend]
+    Backend -->|probe request| Requests[Kafka request topic]
     Requests --> Worker[Probe worker]
-    Worker -->|HTTP health check| Services[Monitored services]
-    Services -->|HTTP response| Worker
-    Worker --> Results
+    Worker -->|HTTP| Services[Monitored services]
+    Worker -->|probe result| Results[Kafka result topic]
     Results --> Backend
-    Backend -->|History / deployments / incidents| DB[(PostgreSQL)]
+    Backend -->|checks, deployments, incidents| DB[(PostgreSQL)]
 
-    Prometheus -->|Scrape metrics| Backend
-    Prometheus -->|Scrape metrics| Worker
+    Prometheus -->|scrape| Backend
+    Prometheus -->|scrape| Worker
     Backend -->|OTLP traces| Collector[OpenTelemetry Collector]
     Worker -->|OTLP traces| Collector
     Collector --> Tempo
-    Grafana -->|Query metrics| Prometheus
-    Grafana -->|Query traces| Tempo
+    Grafana --> Prometheus
+    Grafana --> Tempo
 ```
 
-The backend dispatches probes through Kafka; the database-free worker performs bounded HTTP work and publishes results back through Kafka. The backend persists results, updates service status, and evaluates incidents in one transaction. Delivery is at-least-once, with database-backed result deduplication. A synchronous manual-check endpoint is also available.
+The backend snapshots the current deployment when it dispatches a request. A database-free worker performs bounded HTTP probes and returns results through Kafka. Transactional backend processing deduplicates results, writes history, updates current health, and evaluates incident state. The browser obtains an OIDC access token with PKCE; backend authorization remains authoritative.
 
-The optional AWS architecture preserves this flow on ECS Fargate. An ALB sends `/` to the dashboard and `/api/*` directly to the backend; RDS and optional MSK Serverless stay in isolated subnets, while demo services use private service discovery. CloudWatch receives the existing structured application logs. See the [AWS deployment guide](docs/aws-deployment.md).
-
-```mermaid
-flowchart LR
-    Internet --> ALB[Application Load Balancer]
-    ALB -->|/| Dashboard[ECS dashboard]
-    ALB -->|/api/*| CloudBackend[ECS backend]
-    CloudBackend --> RDS[(RDS PostgreSQL)]
-    CloudBackend --> MSK[MSK Serverless]
-    MSK --> CloudWorker[ECS probe worker]
-    CloudWorker --> CloudMap[Private demo services]
-    CloudWorker --> MSK
-    ECS[ECS services] --> Logs[CloudWatch Logs]
-    Actions[GitHub Actions OIDC] --> ECR[ECR commit-SHA images]
-    ECR --> ECS
-```
+The optional AWS design retains the same application boundaries on ECS Fargate. An ALB routes `/` to the dashboard and `/api/*` to the backend; RDS and optional MSK Serverless remain private. The identity provider is external and configurable—Keycloak is local-development infrastructure and is not exposed by the AWS ALB.
 
 ## Tech Stack
 
 | Area | Technology |
 |---|---|
-| Application | Java 25, Spring Boot 4.1.1 |
-| Dashboard | React 19, TypeScript 7, Vite 8, Nginx |
-| Build | Maven 3.9.16 via Maven Wrapper |
+| Backend | Java 25, Spring Boot 4.1.1, Spring Security resource server |
+| Dashboard | React 19, TypeScript 7, Vite 8, `oidc-client-ts`, unprivileged Nginx |
 | Messaging | Apache Kafka 4.3.0, Spring Kafka |
 | Persistence | PostgreSQL 18.6, Spring Data JPA, Flyway |
-| Local environment | Docker Compose, six non-root application images |
-| Metrics and dashboards | Micrometer, Prometheus 3.10.0, Grafana 12.4.11 |
-| Tracing | OpenTelemetry, Collector 0.147.0, Tempo 2.10.7 |
-| Testing | JUnit, Mockito, AssertJ, PostgreSQL/Kafka Testcontainers, Vitest, React Testing Library, Playwright |
-| CI | GitHub Actions |
-| Optional cloud deployment | Terraform 1.14, AWS ECR, ECS Fargate, ALB, RDS, MSK Serverless, CloudWatch, GitHub OIDC |
+| Identity | Generic OIDC/OAuth 2.0; Keycloak 26.7.0 for the local lab |
+| Observability | Micrometer, Prometheus 3.10.0, Grafana 12.4.11, OpenTelemetry Collector 0.147.0, Tempo 2.10.7 |
+| Testing | JUnit, Mockito, AssertJ, PostgreSQL/Kafka Testcontainers, Vitest, Testing Library, Playwright |
+| Delivery | Maven Wrapper, Docker Compose, GitHub Actions, CodeQL, Dependabot, CycloneDX |
+| Optional cloud | Terraform 1.14, ECR, ECS Fargate, ALB, RDS, optional MSK Serverless, CloudWatch, GitHub OIDC |
 
 ## Quick Start
 
-Requirements: Git, Docker with Linux containers and Compose supporting `--wait`, and PowerShell 5.1+ or PowerShell 7 for demo registration. Java 25 is needed only for builds/tests outside Docker; no global Maven installation is required.
+Requirements: Git, Docker with Linux containers and Compose `--wait`, and PowerShell 5.1+ or PowerShell 7. Java 25 is needed only for host-side builds and tests; Maven is provided by the wrapper.
 
 ```bash
 git clone https://github.com/doctor277/launchguard.git
@@ -92,134 +69,105 @@ cp .env.example .env
 docker compose up --build -d --wait --wait-timeout 180
 ```
 
-On Windows PowerShell, use `Copy-Item .env.example .env` instead of `cp`. Review `.env` before startup if default ports are occupied; it is ignored by Git.
+On Windows, use `Copy-Item .env.example .env`. The values in `.env.example` are local demonstration defaults; `.env` is ignored by Git.
 
-Register the three demos from a PowerShell terminal at the repository root:
+Register the demo services from PowerShell. The script obtains a short-lived local automation token and never prints or persists it:
 
 ```powershell
 ./scripts/register-demo-services.ps1
 ```
 
-Registration reuses matching services and rejects conflicting targets without overwriting history. Compose checks every 5 seconds by default. Container targets use Docker DNS, not host `localhost`. If the backend host port changes, pass `-BackendUrl http://localhost:YOUR_PORT` to the registration script.
+Open [http://localhost:3001](http://localhost:3001), select **Sign in with OIDC**, and use one of the clearly local-only accounts:
+
+| Role | Username | Demo password |
+|---|---|---|
+| Viewer | `launchguard-viewer` | `viewer-demo-only` |
+| Operator | `launchguard-operator` | `operator-demo-only` |
+| Administrator | `launchguard-admin` | `admin-demo-only` |
 
 | Component | Default host address |
 |---|---|
-| LaunchGuard dashboard | [localhost:3001](http://localhost:3001) |
+| Dashboard | `http://localhost:3001` |
 | Backend API | `http://localhost:8080` |
-| Probe-worker health | `http://localhost:8084/actuator/health` |
-| Payment health | `http://localhost:8081/health` |
-| Order health | `http://localhost:8082/health` |
-| Notification health | `http://localhost:8083/health` |
-| PostgreSQL | `localhost:5432` |
-| Kafka host listener | `localhost:9092` |
-| Prometheus | [localhost:9090](http://localhost:9090) |
-| Grafana dashboard | [LaunchGuard Platform](http://localhost:3000/d/launchguard-platform) |
-| Tempo readiness | `http://localhost:3200/ready` |
-| Collector OTLP HTTP / health | `http://localhost:4318/v1/traces` / `http://localhost:13133` |
+| Local Keycloak | `http://localhost:8085` |
+| Probe worker health | `http://localhost:8084/actuator/health` |
+| Payment / order / notification | `http://localhost:8081` / `:8082` / `:8083` |
+| PostgreSQL / Kafka | `localhost:5432` / `localhost:9092` |
+| Prometheus / Grafana | `http://localhost:9090` / `http://localhost:3000` |
+| Tempo / Collector health | `http://localhost:3200/ready` / `http://localhost:13133` |
 
-Published ports bind to `127.0.0.1` and can be overridden in `.env`. The first build downloads images and Maven dependencies. Inspect the lab with `docker compose ps` and `docker compose logs backend probe-worker`; stop it with `docker compose down`. PostgreSQL and Prometheus named volumes survive normal stops. Do not add `-v` unless intentionally deleting stored lab data.
-
-See the [technical guide](docs/technical-guide.md) for host-run Java setup, WSL, port overrides, demo scenarios, and troubleshooting.
+All published ports bind to loopback. Inspect the lab with `docker compose ps`, and stop it without deleting named volumes using `docker compose down`.
 
 ## API
 
-Service-scoped routes use `/api/services/{id}`:
+All `/api/**` routes require a Bearer access token. Reads require `VIEWER`, checks and deployment registration require `OPERATOR`, and service creation/deletion require `ADMIN`.
 
 | Area | Routes |
 |---|---|
-| Service registry | `GET/POST /api/services`, `GET/DELETE /api/services/{id}` |
-| Health checks | `POST /check/async` (202), `POST /check` (synchronous), `GET /checks` |
+| Services | `GET/POST /api/services`, `GET/DELETE /api/services/{id}` |
+| Checks | `POST /check`, `POST /check/async`, `GET /checks` |
 | Reliability | `GET /metrics`, `GET /metrics/timeline` |
 | Deployments | `POST/GET /deployments`, `GET /deployments/{deploymentId}`, `GET /deployments/{deploymentId}/metrics` |
-| Incidents | `GET /incidents`, `GET /incidents/current`, `GET /incidents/{incidentId}`, `GET /incident-metrics` |
+| Incidents | `GET /incidents`, `/incidents/current`, `/incidents/{incidentId}`, `/incident-metrics` |
 
-Register a deployment for a service returned by the bootstrap or `GET /api/services` (replace `SERVICE_ID`):
-
-```bash
-curl -i -X POST http://localhost:8080/api/services/SERVICE_ID/deployments \
-  -H "Content-Type: application/json" \
-  -d '{"version":"1.0.0","commitSha":"a921fc7","description":"Payment release"}'
-```
-
-The new deployment becomes current; existing checks retain their original association. Service metrics/timelines support `1h`, `24h`, `7d`, `30d`, and `all`, defaulting to `24h`. History endpoints use zero-based `page` and `size` (default 20, maximum 100). Responses are DTOs with structured validation errors.
-
-Full payloads, pagination metadata, incident semantics, and CI-report replay behavior are in the [API reference](docs/technical-guide.md#api).
+Service metrics support `1h`, `24h`, `7d`, `30d`, and `all`. History uses zero-based `page` and `size`, with a maximum page size of 100. Responses are DTOs with structured errors. See the [technical guide](docs/technical-guide.md#api) and [security model](docs/security.md).
 
 ## Testing
 
-The latest validation contains **134 Java tests** and **33 frontend unit/component tests**, with zero failures, errors, or skips, plus a real-browser Compose smoke test. Real PostgreSQL and Kafka Testcontainers exercise the asynchronous HTTP-to-database path, duplicate results, incident transitions, deployment correlation, and trace propagation. See the [V0.10 validation report](docs/v0.10-validation.md).
-
-With Java 25 and Docker reachable from the JVM, run the same full build/test command used by CI:
+The V1.0 suite includes Java unit and integration tests, 43 dashboard unit/component tests, and an authenticated Playwright flow against the real Compose stack. PostgreSQL and Kafka Testcontainers exercise persistence, event delivery, concurrency, incidents, deployments, and trace propagation; Docker unavailability fails integration tests instead of silently skipping them.
 
 ```bash
 sh ./mvnw -B -ntp clean verify
-```
-
-Windows PowerShell:
-
-```powershell
-./mvnw.cmd -B -ntp clean verify
-./scripts/assert-test-results.ps1
-```
-
-The Compose lab does not need to be running for Testcontainers. Docker unavailability fails integration tests rather than silently skipping them.
-
-Run the dashboard checks with the locked Node version from `dashboard/.node-version`:
-
-```bash
 cd dashboard
 npm ci
+npm audit --audit-level=high
 npm test
 npm run build
 ```
 
-[GitHub Actions CI](.github/workflows/ci.yml) runs on pull requests, pushes to `main`, and reusable workflow calls. It checks locked frontend dependencies, frontend tests/build, all Maven modules, zero skipped Java tests, PowerShell contracts, workflow lint, Terraform formatting/validation, Compose configuration, all six application image builds, and a real-browser dashboard smoke test against the Compose backend. The [delivery](.github/workflows/delivery.yml) and [AWS deployment](.github/workflows/aws-deploy.yml) workflows are manually dispatched; publication/deployment remains opt-in.
+GitHub Actions also checks zero skipped Java tests, PowerShell contracts, Terraform, TFLint, workflow lint, Compose, all six application images, local OIDC, and the real-browser secured monitoring flow. CycloneDX Java and dashboard SBOMs are retained as CI artifacts. CodeQL analyzes Java and TypeScript separately.
 
 ## Observability
 
-- **Prometheus** scrapes backend/worker JVM, HTTP, Kafka, probe, incident, and workload metrics. Custom labels exclude service/request/deployment identifiers.
-- **Grafana** provisions Prometheus and Tempo datasources and the LaunchGuard Platform dashboard automatically; local access is anonymous, read-only Viewer.
-- **OpenTelemetry** propagates W3C context across Kafka messages and the worker's HTTP/thread boundaries. Traces go through the Collector to **Tempo**; metrics are scraped directly, not exported through OTLP.
-- **Structured logs** correlate request/service/deployment fields with trace/span IDs where applicable.
-
-Backend and worker expose `/actuator/health`, readiness/liveness health paths, and `/actuator/prometheus`, without sensitive management endpoints. Compose samples every trace for the demo. Prometheus retains 24 hours in a named volume; Tempo uses ephemeral local storage with 1-hour retention. Logs are not ingested into a separate logging backend.
-
-See [observability details](docs/technical-guide.md#platform-observability) for metric names, tracing semantics, retention limits, and the repeatable failure/recovery/slow-probe demonstration.
+- **Prometheus** scrapes bounded backend and worker metrics. Backend Prometheus access is anonymous for the private scrape path, but the AWS ALB does not route Actuator endpoints.
+- **Grafana** provisions Prometheus and Tempo datasources plus the LaunchGuard Platform dashboard; local Grafana access is anonymous read-only.
+- **OpenTelemetry** carries W3C context through Kafka and worker HTTP execution; the Collector exports traces to **Tempo**.
+- **Structured logs** include safe trace and audit context such as subject ID, roles, action, path, and status—never JWTs or authorization headers.
 
 ## Repository Structure
 
 ```text
 launchguard/
-├── infra/terraform/     Modular AWS dev infrastructure
-├── backend/             REST API, dispatch, persistence, incidents, Flyway
-├── dashboard/           React application UI, tests, and Nginx API proxy
+├── backend/             REST API, OIDC resource server, persistence, incidents
+├── dashboard/           Authenticated React UI and Nginx same-origin proxy
 ├── probe-worker/        Kafka consumer and bounded HTTP probe execution
 ├── monitoring-events/   Shared event contracts and Kafka configuration
-├── demo-services/       payment-service, order-service, notification-service
-├── observability/       Prometheus, Collector, Tempo, Grafana provisioning
-├── scripts/             Registration, validation, deployment reporting
-├── docs/                Technical reference and validation history
-├── .github/workflows/   CI and opt-in delivery demonstration
-├── docker-compose.yml   Twelve-container local lab
-└── pom.xml              Seven-module Maven reactor, including the parent
+├── demo-services/       Three controllable monitored services
+├── identity/            Reproducible local Keycloak realm
+├── observability/       Prometheus, Grafana, Collector, and Tempo configuration
+├── infra/terraform/     Optional AWS development architecture
+├── scripts/             Bootstrap, validation, and deployment reporting
+├── docs/                Security, architecture, operations, and validation evidence
+└── .github/workflows/   CI, CodeQL, delivery, and opt-in AWS deployment
 ```
 
 ## Project Status
 
-LaunchGuard is under active development. Its complete local lab is the primary demonstration environment; an optional, private-by-default AWS dev architecture is defined but not automatically provisioned. It is not production-ready and does not yet provide application authentication or tenant isolation. The LaunchGuard dashboard is the application view; Grafana remains the separate local platform telemetry view.
+LaunchGuard 1.0 is an actively developed engineering/portfolio project. The secured local lab is its primary demonstration environment; the AWS architecture is opt-in and is never deployed by CI. It is not a production monitoring service or a multi-tenant platform.
 
 ## Documentation
 
-- [Technical guide](docs/technical-guide.md): detailed setup, configuration, APIs, Kafka processing, database design, CI/delivery, observability, and limitations.
-- [AWS deployment guide](docs/aws-deployment.md): architecture, cost controls, account/OIDC bootstrap, deployment, verification, and teardown.
-- [Validation reports](docs/): dated milestone implementation and test evidence, including [V0.10 AWS deployment validation](docs/v0.10-validation.md).
-
-Historical milestone detail lives in `docs/`; the README describes the current repository.
+- [Security model](docs/security.md)
+- [Technical guide](docs/technical-guide.md)
+- [AWS deployment guide](docs/aws-deployment.md)
+- [V1.0 validation report](docs/v1.0-validation.md)
+- [Historical validation reports](docs/)
+- [Changelog](CHANGELOG.md)
 
 ## Roadmap
 
-- Security and controlled external exposure.
-- Per-service policies, distributed scheduling, and data/telemetry retention.
+- Per-service monitoring policies and distributed scheduling.
+- Data and telemetry retention management.
 - Deeper deployment integrations and operational automation.
 
 These are future areas, not implemented capabilities.

@@ -109,7 +109,7 @@ flowchart LR
 
 The backend retains its controller/service/repository structure. Scheduled probes now use the dispatcher, Kafka, and the worker. Result persistence atomically writes history, updates current status, and invokes the existing incident evaluator. Direct HTTP probing remains only for the synchronous manual endpoint. The worker has neither database dependencies nor credentials; Compose also places PostgreSQL on a network the worker does not join.
 
-The application dashboard consumes the existing DTO-based APIs through a same-origin reverse proxy; no frontend-specific backend routes or CORS policy are required. Metrics remain database aggregates, history remains paginated, and JPA entities, Spring `Page` objects, and database projection types do not leak through the REST contract.
+The authenticated dashboard consumes the existing DTO APIs through a same-origin reverse proxy and sends its OIDC Bearer token on every API request. Production needs no cross-origin API access; the backend permits only the configured local Vite origin for development. Metrics remain database aggregates, history remains paginated, and JPA entities, Spring `Page` objects, and database projection types do not leak through the REST contract.
 
 Actuator exposes health and Prometheus endpoints on backend and worker, with hidden health details and separate readiness/liveness groups. Compose waits for PostgreSQL and Kafka health before starting the backend. Demos do not gate backend startup: an unavailable target is a normal monitored failure. Docker health status does not restart an unhealthy demo; `restart: unless-stopped` handles exited processes, not failed probes.
 
@@ -155,7 +155,8 @@ launchguard/
 |-- docs/                            Milestone validation reports
 |-- .mvn/wrapper/                    Maven Wrapper configuration
 |-- observability/                   Collector / Prometheus / Tempo / Grafana provisioning
-|-- docker-compose.yml               Complete twelve-container application/observability lab
+|-- identity/                        Reproducible local Keycloak realm and clients
+|-- docker-compose.yml               Complete thirteen-container secured lab
 |-- .env.example                     Optional Compose overrides
 |-- pom.xml                          Multi-module reactor build
 |-- mvnw / mvnw.cmd
@@ -172,7 +173,7 @@ No global Maven installation is required.
 
 ## Quick start with Docker Compose
 
-Clone the public repository, change into `launchguard`, and start all twelve containers:
+Clone the public repository, change into `launchguard`, and start all thirteen containers:
 
 ```bash
 git clone https://github.com/doctor277/launchguard.git
@@ -187,6 +188,7 @@ All published ports are bound to host loopback, not all network interfaces:
 
 - LaunchGuard API: `http://localhost:8080`
 - LaunchGuard application dashboard: `http://localhost:3001`
+- Local Keycloak: `http://localhost:8085`
 - Demo payment service: `http://localhost:8081`
 - Demo order service: `http://localhost:8082`
 - Demo notification service: `http://localhost:8083`
@@ -194,7 +196,7 @@ All published ports are bound to host loopback, not all network interfaces:
 - Kafka host listener: `localhost:9092`
 - Probe-worker health: `http://localhost:8084/actuator/health`
 
-In a second terminal, register all three demos explicitly:
+In a second terminal, register all three demos explicitly. The script obtains a short-lived local automation token without printing it:
 
 ```powershell
 .\scripts\register-demo-services.ps1
@@ -202,10 +204,11 @@ In a second terminal, register all three demos explicitly:
 
 Repeat execution reuses the same service IDs. An existing name with a different target produces a clear error without overwriting or deleting history. Normal backend startup never seeds demo data.
 
-The registered targets are `http://payment-service:8081`, `http://order-service:8082`, and `http://notification-service:8083`. Host port overrides do not change these internal URLs. In a backend container, `localhost` means that backend itself, not a demo. Equivalent manual registration for one demo:
+The registered targets are `http://payment-service:8081`, `http://order-service:8082`, and `http://notification-service:8083`. Host port overrides do not change these internal URLs. In a backend container, `localhost` means that backend itself, not a demo. Open the dashboard and sign in through Keycloak using a local account documented in [security.md](security.md). Equivalent manual registration requires an ADMIN token:
 
 ```bash
 curl -X POST http://localhost:8080/api/services \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"name":"payment-service","baseUrl":"http://payment-service:8081","healthPath":"/health"}'
 ```
@@ -239,17 +242,17 @@ Optional overrides: copy `.env.example` to `.env` and edit it before starting. F
 
 ## Run applications locally
 
-Start PostgreSQL and Kafka:
+Start PostgreSQL, Kafka, and the local identity provider:
 
 ```bash
-docker compose up -d postgres kafka
+docker compose up -d postgres kafka keycloak
 ```
 
 In one terminal, start the backend:
 
 ```bash
 sh ./mvnw -DskipTests package
-java -jar backend/target/launchguard-backend-0.9.0-SNAPSHOT.jar
+java -jar backend/target/launchguard-backend-1.0.0.jar
 ```
 
 On Windows PowerShell or Command Prompt, use `mvnw.cmd` in place of `sh ./mvnw`.
@@ -257,7 +260,7 @@ On Windows PowerShell or Command Prompt, use `mvnw.cmd` in place of `sh ./mvnw`.
 Start the worker in another terminal:
 
 ```bash
-java -jar probe-worker/target/probe-worker-0.9.0-SNAPSHOT-exec.jar
+java -jar probe-worker/target/probe-worker-1.0.0-exec.jar
 ```
 
 For host-run Java processes, Kafka defaults to `localhost:9092`; if its host port changes, set `KAFKA_BOOTSTRAP_SERVERS`. Containers use `kafka:9092` independently of host ports.
@@ -296,6 +299,8 @@ Each demo accepts `DEMO_SLOW_DELAY_MS` (default `2000`, range 1..30000) as the d
 Hibernate uses `ddl-auto: validate`; Flyway owns schema changes. Applied migrations cover V1 monitoring, V2 deployments, V3 incidents, V4 probe-request correlation, and V5 CI deployment metadata. Existing history is preserved; never edit an applied migration.
 
 ## API
+
+Every `/api/**` request requires an OIDC Bearer access token. Set `ACCESS_TOKEN` to a short-lived token from the configured provider and add `-H "Authorization: Bearer $ACCESS_TOKEN"` to each LaunchGuard API curl command below. Demo-service controls on ports 8081–8083 remain local-only fixtures. See [security.md](security.md) for the role matrix and token-handling model.
 
 | Method | Path | Result |
 |---|---|---|
@@ -649,7 +654,7 @@ The dashboard is a separate React application. Its overview route loads the serv
 
 Hash-based service routes (`#/services/{id}`) provide reliability metrics, a bounded SVG latency/status timeline, paginated health checks, current deployment metadata, deployment history and deployment-specific metrics, the current incident, paginated incident history, and incident metrics. The chart reduces long timelines to at most 240 plotted points while preserving failures and latency peaks; the backend timeline response itself remains raw and unpaginated.
 
-Data refreshes every 10 seconds while the tab is visible and can also be refreshed manually. Requests have a 10-second client timeout and are aborted when a view changes or unmounts. Loading, empty, structured API error, backend-unavailable, partial-section failure, and missing-service states are rendered explicitly. The dashboard is read-only: registration, checks, failure controls, and deployment reporting remain API/script operations.
+Data refreshes every 10 seconds while the tab is visible and can also be refreshed manually. Requests have a 10-second client timeout and are aborted when a view changes or unmounts. Loading, empty, structured API error, backend-unavailable, partial-section failure, and missing-service states are rendered explicitly. VIEWER users have read-only access; OPERATOR and ADMIN users can trigger a health check from a service detail page. Registration, demo failure controls, and deployment reporting remain API/script operations.
 
 For local frontend development, run the backend separately and use the Vite proxy:
 
@@ -659,7 +664,7 @@ npm ci
 npm run dev
 ```
 
-Vite listens on `http://localhost:3001` and proxies `/api` to `DASHBOARD_BACKEND_URL` (default `http://localhost:8080`). The production multi-stage image builds static assets with the lockfile, runs Nginx unprivileged, serves the SPA on container port 8080, exposes `/healthz`, and proxies relative `/api` requests to `backend:8080`. This same-origin design does not expose backend credentials or require CORS changes. Grafana remains the platform telemetry dashboard; it is not replaced by this application UI.
+Vite listens on `http://localhost:3001` and proxies `/api` to `DASHBOARD_BACKEND_URL` (default `http://localhost:8080`). The production multi-stage image builds static assets with the lockfile, runs Nginx unprivileged, serves the SPA on container port 8080, exposes `/healthz`, generates public OIDC runtime configuration, and proxies relative `/api` requests to `backend:8080`. The same-origin production design needs no CORS exception; direct Vite development uses the explicitly configured origin. Grafana remains the platform telemetry dashboard; it is not replaced by this application UI.
 
 ## Tests and build
 
@@ -781,7 +786,7 @@ Both producers use `acks=all` and idempotent producer retries, with bounded queu
 
 ### Compose and configuration
 
-The twelve Compose services are PostgreSQL, Kafka, backend, dashboard, probe-worker, three demos, Collector, Prometheus, Grafana, and Tempo. Kafka uses combined KRaft broker/controller roles without ZooKeeper. Backend startup waits for PostgreSQL and Kafka health; the dashboard waits for backend health; the worker waits only for Kafka. All six application images run non-root. Backend and worker expose health and Prometheus endpoints, with hidden health details; the dashboard exposes `/healthz`. Backend readiness covers PostgreSQL/Kafka; worker readiness covers Kafka. This is connectivity readiness, not a guarantee that every consumer is assigned or every record is processed.
+The thirteen Compose services are PostgreSQL, Kafka, Keycloak, backend, dashboard, probe-worker, three demos, Collector, Prometheus, Grafana, and Tempo. Kafka uses combined KRaft broker/controller roles without ZooKeeper. Backend startup waits for PostgreSQL, Kafka, and Keycloak health; the dashboard waits for backend and Keycloak; the worker waits only for Kafka. All six application images run non-root with dropped capabilities, no-new-privileges, read-only root filesystems, and bounded tmpfs mounts. Backend and worker expose health and Prometheus endpoints with hidden health details; the dashboard exposes `/healthz`. Backend readiness covers PostgreSQL/Kafka; worker readiness covers Kafka. This is connectivity readiness, not a guarantee that every consumer is assigned or every record is processed.
 
 Extra environment variables:
 
@@ -822,11 +827,11 @@ See the [V0.6 validation report](v0.6-validation.md) for actual results and timi
 
 ### CI and delivery workflows
 
-[ci.yml](../.github/workflows/ci.yml) runs on pull requests, pushes to `main`, and reusable workflow calls. It uses Java 25, Maven Wrapper `clean verify`, Maven caching, real PostgreSQL/Kafka Testcontainers, a strict Surefire report gate, PowerShell syntax/contract checks, actionlint 1.7.12 (digest-pinned, with ShellCheck), Compose configuration validation, and all six Docker image builds. Node is selected deterministically from `dashboard/.node-version`; `npm ci`, Vitest, the Vite production build, and a Playwright browser smoke test against the complete Compose backend are required. Missing reports, missing integration suites, failures, errors, or skipped Java tests fail the gate. Reports upload even on failure. Obsolete runs for the same PR/branch are cancelled; the Ubuntu 24.04 job has a 40-minute timeout and only `contents: read`. Checkout credentials are not persisted. Third-party actions remain pinned to reviewed release commit SHAs.
+[ci.yml](../.github/workflows/ci.yml) runs on pull requests, pushes to `main`, and reusable workflow calls. It uses Java 25, Maven Wrapper `clean verify`, real PostgreSQL/Kafka Testcontainers, a strict Surefire report gate, PowerShell contract checks, actionlint, Terraform checks, Compose validation, and all six Docker image builds. Node is selected from `dashboard/.node-version`; `npm ci`, a high-severity npm audit gate, Vitest, the production build, and an authenticated Playwright flow through local Keycloak are required. CycloneDX Java/dashboard SBOMs are retained as artifacts. The job has only `contents: read`; checkout credentials are not persisted. A separate SHA-pinned CodeQL workflow has narrowly scoped `security-events: write`, and Dependabot monitors Maven, npm, Actions, Docker, and Terraform dependencies.
 
 [delivery.yml](../.github/workflows/delivery.yml) is manually dispatched. Its reusable CI job must succeed before delivery. Delivery itself runs only on a non-fork repository's `main` branch: build SHA-tagged images, start the full runner-local lab, report payment's CI deployment, verify metadata/check/incident correlation, replay it, reject a conflicting retry, and save JSON evidence. The job cleans up its disposable containers afterward. Publishing is disabled by default. Neither workflow creates cloud infrastructure or deploys to a remote host.
 
-External reporting is explicitly skipped when repository variable `LAUNCHGUARD_URL` is unset. If set, also provide `LAUNCHGUARD_SERVICE_ID` and `LAUNCHGUARD_ENVIRONMENT`; the service must already exist. This **registers metadata only** for an operator-managed deployment, not deploys the service. The runner must actually reach that URL; its `localhost` is the runner, never the developer's Windows PC. Do not expose the unauthenticated API publicly just to run this demonstration.
+External reporting is explicitly skipped when repository variable `LAUNCHGUARD_URL` is unset. If set, also provide `LAUNCHGUARD_SERVICE_ID`, `LAUNCHGUARD_ENVIRONMENT`, `OIDC_AUTOMATION_TOKEN_ENDPOINT`, and `OIDC_AUTOMATION_CLIENT_ID`, plus `OIDC_AUTOMATION_CLIENT_SECRET` as an environment secret; the service must already exist. The short-lived token is never printed. This **registers metadata only** for an operator-managed deployment, not deploys the service. The runner must actually reach that URL; its `localhost` is the runner, never the developer's Windows PC.
 
 ### Image identification and optional GHCR
 
@@ -845,7 +850,7 @@ POST /api/services/{serviceId}/deployments
 Content-Type: application/json
 
 {
-  "version": "0.9.0-SNAPSHOT",
+  "version": "1.0.0",
   "commitSha": "a921fc7",
   "description": "GitHub Actions deployment",
   "source": "CI",
@@ -871,7 +876,7 @@ flowchart TD
 
 ### PowerShell reporting and repeatable local delivery
 
-PowerShell 5.1/7 is first-class; Ubuntu GitHub runners use built-in `pwsh`, so a duplicate Bash client is unnecessary. The small reporting script validates inputs, safely encodes JSON (including quotes/newlines), fails on HTTP/network errors, and prints and returns the deployment ID/version. Retry with the **same** external ID and **identical** arguments. No automatic retry loop or authentication is introduced.
+PowerShell 5.1/7 is first-class; Ubuntu GitHub runners use built-in `pwsh`. The reporting script validates inputs, obtains or accepts a Bearer token without logging it, safely encodes JSON (including quotes/newlines), fails on HTTP/network errors, and prints and returns the deployment ID/version. Retry with the **same** external ID and **identical** arguments. No automatic retry loop is introduced.
 
 ```powershell
 .\scripts\set-build-metadata.ps1
@@ -923,7 +928,7 @@ Backend and worker expose only these management paths on their existing HTTP por
 | `/actuator/health/liveness` | Process liveness state, independent of infrastructure |
 | `/actuator/prometheus` | Prometheus/OpenMetrics scrape |
 
-`env`, `configprops`, `beans`, `heapdump`, and other sensitive endpoints are not exposed. JMX endpoint exposure is disabled. There is no new management port or authentication implementation. Existing application and demo APIs remain unauthenticated, so all Compose host bindings stay on `127.0.0.1`.
+`env`, `configprops`, `beans`, `heapdump`, and other sensitive endpoints are not exposed. JMX endpoint exposure is disabled. Application APIs require OIDC; liveness, readiness, and Prometheus remain anonymous for orchestrator/scraper access. Demo controls remain unauthenticated local fixtures, so all Compose host bindings stay on `127.0.0.1`. The AWS ALB never routes backend Actuator paths.
 
 ```bash
 curl http://localhost:8080/actuator/health/readiness
@@ -968,10 +973,11 @@ Grafana provisions `launchguard-prometheus` and `launchguard-tempo` plus dashboa
 
 | Component | Image | Default host port | Validated local override |
 |---|---|---|---|
-| Backend | LaunchGuard 0.9.0-SNAPSHOT | 8080 | 9080 |
-| Dashboard | LaunchGuard 0.9.0-SNAPSHOT | 3001 | 3001 |
-| Worker | LaunchGuard 0.9.0-SNAPSHOT | 8084 | 9084 |
-| Payment / order / notification | LaunchGuard 0.9.0-SNAPSHOT | 8081 / 8082 / 8083 | 9081 / 9082 / 9083 |
+| Backend | LaunchGuard 1.0.0 | 8080 | 9080 |
+| Dashboard | LaunchGuard 1.0.0 | 3001 | 3001 |
+| Worker | LaunchGuard 1.0.0 | 8084 | 9084 |
+| Payment / order / notification | LaunchGuard 1.0.0 | 8081 / 8082 / 8083 | 9081 / 9082 / 9083 |
+| Keycloak | 26.7.0 | 8085 | 8085 |
 | PostgreSQL | 18.6-alpine | 5432 | 15432 |
 | Kafka | 4.3.0 | 9092 | 19092 |
 | Prometheus | v3.10.0 | 9090 | 9090 |
@@ -1076,13 +1082,13 @@ The optional AWS deployment architecture, account bootstrap, cost controls, and 
 
 - The concurrency guard is local to one backend process, not distributed.
 - Probe concurrency is bounded, not unlimited. Four simultaneous slow probes can occupy all default worker threads.
-- No authentication, authorization, TLS policy management, or tenant isolation.
+- OIDC and application RBAC are implemented; tenant isolation, identity-provider operations, and production TLS/domain automation are not.
 - Incidents are detected from sampled checks, not continuous observation or application telemetry; durations begin at confirmation, not the first failure.
 - No external notifications, alert delivery, automatic rollback, or AI functionality. GitHub integration is limited to delivery workflows/metadata reporting, not webhooks or repository synchronization.
 - Incident thresholds are global, not configurable per service; changing them affects the next evaluation of persisted recent history.
 - No distributed scheduling infrastructure or support guarantee for multiple monitoring instances. Database locking and uniqueness protect incident transitions, but the check guard remains process-local.
 - Historical failures before V0.4 are not backfilled into incidents; they can contribute to a streak evaluated by a new check.
-- The application dashboard is read-only and polls REST APIs; it has no push transport, editing controls, or authentication boundary. Grafana remains a separate platform telemetry view.
+- The application dashboard polls authenticated REST APIs and lets operators trigger existing checks; it has no push transport or general editing surface. Grafana remains a separate platform telemetry view.
 - Timeline results are raw and unpaginated; long `all` windows can produce a large response.
 - Deployment registration records the server time; importing historical deployment timestamps is not supported.
 - Checks capture the current deployment before probing. If registration races with an in-flight probe, that check retains the deployment it observed at the start.
