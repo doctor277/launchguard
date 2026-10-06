@@ -53,7 +53,7 @@ jobs:
         run: sh ./mvnw -B -ntp clean verify
       - name: Generate CycloneDX release SBOMs
         run: |
-          ./mvnw -B -ntp org.cyclonedx:cyclonedx-maven-plugin:2.9.3:makeAggregateBom -DoutputFormat=json -DschemaVersion=1.6
+          sh ./mvnw -B -ntp org.cyclonedx:cyclonedx-maven-plugin:2.9.3:makeAggregateBom -DoutputFormat=json -DschemaVersion=1.6
           mkdir -p target
           cd dashboard
           npm sbom --sbom-format=cyclonedx > ../target/dashboard-sbom.cdx.json
