@@ -40,6 +40,9 @@ jobs:
       - name: Install locked dashboard dependencies
         working-directory: dashboard
         run: npm ci
+      - name: Reject high-severity dashboard dependency vulnerabilities
+        working-directory: dashboard
+        run: npm audit --audit-level=high
       - name: Dashboard component and unit tests
         working-directory: dashboard
         run: npm test
@@ -48,6 +51,12 @@ jobs:
         run: npm run build
       - name: Compile and test every Maven module (real PostgreSQL and Kafka)
         run: sh ./mvnw -B -ntp clean verify
+      - name: Generate CycloneDX release SBOMs
+        run: |
+          ./mvnw -B -ntp org.cyclonedx:cyclonedx-maven-plugin:2.9.3:makeAggregateBom -DoutputFormat=json -DschemaVersion=1.6
+          mkdir -p target
+          cd dashboard
+          npm sbom --sbom-format=cyclonedx > ../target/dashboard-sbom.cdx.json
       - name: Require all modules, integration suites, and zero skipped tests
         shell: pwsh
         run: ./scripts/assert-test-results.ps1
@@ -57,6 +66,8 @@ jobs:
           ./scripts/validate-powershell.ps1
           ./scripts/test-report-deployment.ps1
           ./scripts/demonstrate-ci-failure.ps1
+      - name: POSIX shell syntax
+        run: sh -n scripts/validate-keycloak.sh
       - name: Workflow lint (pinned tool, includes ShellCheck)
         run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
       - name: Terraform CLI
@@ -105,6 +116,8 @@ jobs:
           path: |
             **/target/surefire-reports/**
             dashboard/test-results/**
+            target/bom.json
+            target/dashboard-sbom.cdx.json
           if-no-files-found: warn
           retention-days: 7
       - name: Stop runner-local lab without removing volumes

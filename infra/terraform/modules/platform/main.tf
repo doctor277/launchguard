@@ -31,7 +31,13 @@ locals {
       { name = "MONITORING_INITIAL_DELAY", value = "30s" },
       { name = "MONITORING_CONNECT_TIMEOUT", value = "2s" },
       { name = "MONITORING_RESPONSE_TIMEOUT", value = "5s" },
-      { name = "SPRING_PROFILES_ACTIVE", value = local.kafka_enabled ? "aws" : "default" }
+      { name = "SPRING_PROFILES_ACTIVE", value = local.kafka_enabled ? "aws" : "default" },
+      { name = "OIDC_ISSUER_URI", value = var.oidc_issuer_uri },
+      { name = "OIDC_AUDIENCE", value = var.oidc_audience },
+      { name = "OIDC_ROLES_CLAIM", value = var.oidc_roles_claim },
+      { name = "SECURITY_HSTS_ENABLED", value = var.certificate_arn != null ? "true" : "false" }
+      ], var.oidc_jwk_set_uri == "" ? [] : [
+      { name = "OIDC_JWK_SET_URI", value = var.oidc_jwk_set_uri }
     ])
     probe-worker = concat(local.kafka_environment, local.telemetry_environment, [
       { name = "SERVER_PORT", value = "8084" },
@@ -39,7 +45,13 @@ locals {
       { name = "PROBE_WORKER_QUEUE_CAPACITY", value = "64" },
       { name = "SPRING_PROFILES_ACTIVE", value = local.kafka_enabled ? "aws" : "default" }
     ])
-    dashboard            = []
+    dashboard = [
+      { name = "OIDC_ISSUER_URI", value = var.oidc_issuer_uri },
+      { name = "OIDC_CLIENT_ID", value = var.oidc_dashboard_client_id },
+      { name = "OIDC_AUDIENCE", value = var.oidc_audience },
+      { name = "OIDC_CONNECT_SRC", value = var.oidc_connect_src },
+      { name = "DASHBOARD_HSTS", value = var.certificate_arn != null ? "max-age=31536000; includeSubDomains" : "" }
+    ]
     payment-service      = [{ name = "SERVER_PORT", value = "8081" }]
     order-service        = [{ name = "SERVER_PORT", value = "8082" }]
     notification-service = [{ name = "SERVER_PORT", value = "8083" }]

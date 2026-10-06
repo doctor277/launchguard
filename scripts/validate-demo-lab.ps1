@@ -5,15 +5,19 @@ param(
     [string]$OrderUrl = 'http://localhost:8082',
     [string]$NotificationUrl = 'http://localhost:8083',
     [ValidateRange(30, 1800)][int]$TimeoutSeconds = 240,
-    [string]$WslDistribution
+    [string]$WslDistribution,
+    [string]$AccessToken
 )
 
 # Intentionally changes demo health and restarts this Compose project.
 # Never removes volumes. Run against the local lab, not another environment.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. "$PSScriptRoot/launchguard-auth.ps1"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $BackendUrl = $BackendUrl.TrimEnd('/')
+$AccessToken = Get-LaunchGuardAccessToken -AccessToken $AccessToken
+$authorization = New-LaunchGuardAuthorizationHeader -AccessToken $AccessToken
 $demoUrls = @{ 'payment-service' = $PaymentUrl; 'order-service' = $OrderUrl; 'notification-service' = $NotificationUrl }
 $linuxRoot = $null
 if ($WslDistribution) {
@@ -28,7 +32,8 @@ foreach ($key in @('POSTGRES_PORT', 'LAUNCHGUARD_PORT', 'PAYMENT_PORT', 'ORDER_P
     'INCIDENT_FAILURE_THRESHOLD', 'INCIDENT_RECOVERY_THRESHOLD', 'PAYMENT_SLOW_DELAY_MS', 'ORDER_SLOW_DELAY_MS',
     'NOTIFICATION_SLOW_DELAY_MS', 'COMPOSE_PROJECT_NAME', 'KAFKA_PORT', 'PROBE_WORKER_PORT',
     'KAFKA_TOPIC_PARTITIONS', 'KAFKA_CONSUMER_CONCURRENCY', 'PROBE_WORKER_THREADS',
-    'PROBE_WORKER_QUEUE_CAPACITY', 'PROBE_IN_FLIGHT_TTL')) {
+    'PROBE_WORKER_QUEUE_CAPACITY', 'PROBE_IN_FLIGHT_TTL', 'KEYCLOAK_PORT',
+    'OIDC_AUTOMATION_CLIENT_SECRET', 'DASHBOARD_PUBLIC_URL')) {
     $value = [Environment]::GetEnvironmentVariable($key)
     if ($null -ne $value) { $composeEnvironment += "$key=$value" }
 }
@@ -46,7 +51,7 @@ function Invoke-LabDocker {
 }
 function Get-LabApi {
     param([string]$Path)
-    $response = Invoke-RestMethod -Uri "$BackendUrl$Path" -TimeoutSec 15
+    $response = Invoke-RestMethod -Uri "$BackendUrl$Path" -Headers $authorization -TimeoutSec 15
     return $response
 }
 function Wait-LabCondition {
@@ -104,8 +109,8 @@ SELECT json_build_object(
 }
 
 Write-Host 'V0.5 validation: this will simulate outages and recreate the Compose containers, preserving the named volume.'
-$first = @(& "$PSScriptRoot/register-demo-services.ps1" -BackendUrl $BackendUrl -Target Docker)
-$second = @(& "$PSScriptRoot/register-demo-services.ps1" -BackendUrl $BackendUrl -Target Docker)
+$first = @(& "$PSScriptRoot/register-demo-services.ps1" -BackendUrl $BackendUrl -Target Docker -AccessToken $AccessToken)
+$second = @(& "$PSScriptRoot/register-demo-services.ps1" -BackendUrl $BackendUrl -Target Docker -AccessToken $AccessToken)
 $ids = @{}
 foreach ($service in $first) {
     $ids[$service.Name] = $service.Id

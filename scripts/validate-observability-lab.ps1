@@ -11,6 +11,7 @@ param(
     [string]$CollectorHealthUrl = 'http://localhost:13133',
     [ValidateRange(30,600)][int]$TimeoutSeconds = 180,
     [string]$WslDistribution,
+    [string]$AccessToken,
     [string]$EvidencePath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'target/observability-evidence.json')
 )
 
@@ -20,12 +21,16 @@ param(
 # Always recovers payment and restores notification latency, including on assertion failure.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. "$PSScriptRoot/launchguard-auth.ps1"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $BackendUrl = $BackendUrl.TrimEnd('/')
+$AccessToken = Get-LaunchGuardAccessToken -AccessToken $AccessToken
+$authorization = New-LaunchGuardAuthorizationHeader -AccessToken $AccessToken
 $forwarded = @()
 foreach ($key in @('POSTGRES_PORT','LAUNCHGUARD_PORT','PAYMENT_PORT','ORDER_PORT','NOTIFICATION_PORT',
     'KAFKA_PORT','PROBE_WORKER_PORT','PROMETHEUS_PORT','GRAFANA_PORT','TEMPO_PORT','OTEL_HTTP_PORT',
-    'OTEL_HEALTH_PORT','IMAGE_TAG','IMAGE_PREFIX','COMPOSE_PROJECT_NAME')) {
+    'OTEL_HEALTH_PORT','IMAGE_TAG','IMAGE_PREFIX','COMPOSE_PROJECT_NAME','KEYCLOAK_PORT',
+    'OIDC_AUTOMATION_CLIENT_SECRET','DASHBOARD_PUBLIC_URL')) {
     $value = [Environment]::GetEnvironmentVariable($key)
     if ($null -ne $value) { $forwarded += "$key=$value" }
 }
@@ -59,7 +64,7 @@ function Invoke-Docker {
 }
 function Api {
     param([string]$Path, [string]$Method = 'Get', [object]$Body)
-    $arguments = @{Uri="$BackendUrl$Path";Method=$Method;TimeoutSec=15}
+    $arguments = @{Uri="$BackendUrl$Path";Method=$Method;Headers=$authorization;TimeoutSec=15}
     if ($null -ne $Body) { $arguments.ContentType='application/json'; $arguments.Body=$Body | ConvertTo-Json }
     Invoke-RestMethod @arguments
 }
@@ -94,8 +99,9 @@ function Queued {
     param([string]$ServiceId, [string]$TraceId)
     Poll "async HTTP 202 for $ServiceId" {
         try {
-            $arguments = @{UseBasicParsing=$true;Method='Post';Uri="$BackendUrl/api/services/$ServiceId/check/async";TimeoutSec=15}
-            if ($TraceId) { $arguments.Headers=@{traceparent="00-$TraceId-$(([guid]::NewGuid()).ToString('N').Substring(0,16))-01"} }
+            $headers = @{ Authorization = $authorization.Authorization }
+            if ($TraceId) { $headers.traceparent="00-$TraceId-$(([guid]::NewGuid()).ToString('N').Substring(0,16))-01" }
+            $arguments = @{UseBasicParsing=$true;Method='Post';Uri="$BackendUrl/api/services/$ServiceId/check/async";Headers=$headers;TimeoutSec=15}
             $response = Invoke-WebRequest @arguments
             if ($response.StatusCode -ne 202) { throw 'Expected HTTP 202.' }
             $response.Content | ConvertFrom-Json
@@ -138,7 +144,7 @@ function CustomSeries {
 $ids = @{}
 $fixtures = [Collections.Generic.List[string]]::new()
 try {
-    foreach ($service in @(& "$PSScriptRoot/register-demo-services.ps1" -BackendUrl $BackendUrl -Target Docker)) { $ids[$service.Name]=$service.Id }
+    foreach ($service in @(& "$PSScriptRoot/register-demo-services.ps1" -BackendUrl $BackendUrl -Target Docker -AccessToken $AccessToken)) { $ids[$service.Name]=$service.Id }
     foreach ($url in @($PaymentUrl,$OrderUrl,$NotificationUrl)) {
         Invoke-RestMethod -Method Post "$url/admin/normal" -TimeoutSec 15 | Out-Null
         Invoke-RestMethod -Method Post "$url/admin/recover" -TimeoutSec 15 | Out-Null

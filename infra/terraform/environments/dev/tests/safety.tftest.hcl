@@ -97,6 +97,10 @@ run "private_tasks_with_required_endpoints_and_msk_are_valid" {
     acknowledge_billable_resources = true
     enable_vpc_endpoints           = true
     enable_msk                     = true
+    certificate_arn                = "arn:aws:acm:us-east-1:111122223333:certificate/test"
+    oidc_issuer_uri                = "https://id.example.com/realms/launchguard"
+    oidc_dashboard_client_id       = "launchguard-dashboard"
+    oidc_connect_src               = "https://id.example.com"
     desired_counts = {
       backend              = 1
       dashboard            = 1
@@ -114,9 +118,56 @@ run "tasks_without_nat_or_endpoints_fail_early" {
   variables {
     acknowledge_billable_resources = true
     enable_msk                     = true
+    oidc_issuer_uri                = "https://id.example.com/realms/launchguard"
+    oidc_dashboard_client_id       = "launchguard-dashboard"
+    oidc_connect_src               = "https://id.example.com"
     desired_counts = {
       backend              = 1
       dashboard            = 0
+      probe-worker         = 0
+      payment-service      = 0
+      order-service        = 0
+      notification-service = 0
+    }
+  }
+
+  expect_failures = [terraform_data.deployment_guardrails]
+}
+
+run "application_tasks_require_oidc_configuration" {
+  command = plan
+
+  variables {
+    acknowledge_billable_resources = true
+    enable_vpc_endpoints           = true
+    enable_msk                     = true
+    certificate_arn                = "arn:aws:acm:us-east-1:111122223333:certificate/test"
+    desired_counts = {
+      backend              = 1
+      dashboard            = 1
+      probe-worker         = 0
+      payment-service      = 0
+      order-service        = 0
+      notification-service = 0
+    }
+  }
+
+  expect_failures = [terraform_data.deployment_guardrails]
+}
+
+run "authenticated_application_tasks_require_tls" {
+  command = plan
+
+  variables {
+    acknowledge_billable_resources = true
+    enable_vpc_endpoints           = true
+    enable_msk                     = true
+    oidc_issuer_uri                = "https://id.example.com/realms/launchguard"
+    oidc_dashboard_client_id       = "launchguard-dashboard"
+    oidc_connect_src               = "https://id.example.com"
+    desired_counts = {
+      backend              = 1
+      dashboard            = 1
       probe-worker         = 0
       payment-service      = 0
       order-service        = 0

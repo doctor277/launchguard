@@ -5,7 +5,8 @@ param(
     [string]$OrderUrl = 'http://localhost:8082',
     [string]$NotificationUrl = 'http://localhost:8083',
     [ValidateRange(30, 1800)][int]$TimeoutSeconds = 240,
-    [string]$WslDistribution
+    [string]$WslDistribution,
+    [string]$AccessToken
 )
 
 # Changes only the local lab: controls demos, stops/starts order, restarts Kafka,
@@ -13,15 +14,19 @@ param(
 # Use MONITORING_RESPONSE_TIMEOUT=8s so the 5000ms demonstration completes healthy.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. "$PSScriptRoot/launchguard-auth.ps1"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $BackendUrl = $BackendUrl.TrimEnd('/')
+$AccessToken = Get-LaunchGuardAccessToken -AccessToken $AccessToken
+$authorization = New-LaunchGuardAuthorizationHeader -AccessToken $AccessToken
 $demoUrls = @{ 'payment-service' = $PaymentUrl; 'order-service' = $OrderUrl; 'notification-service' = $NotificationUrl }
 $forwarded = @()
 foreach ($key in @('POSTGRES_PORT','LAUNCHGUARD_PORT','PAYMENT_PORT','ORDER_PORT','NOTIFICATION_PORT',
     'KAFKA_PORT','PROBE_WORKER_PORT','MONITORING_INTERVAL','MONITORING_INITIAL_DELAY',
     'MONITORING_CONNECT_TIMEOUT','MONITORING_RESPONSE_TIMEOUT','KAFKA_TOPIC_PARTITIONS',
     'KAFKA_CONSUMER_CONCURRENCY','PROBE_WORKER_THREADS','PROBE_WORKER_QUEUE_CAPACITY',
-    'PROBE_IN_FLIGHT_TTL','INCIDENT_FAILURE_THRESHOLD','INCIDENT_RECOVERY_THRESHOLD','COMPOSE_PROJECT_NAME')) {
+    'PROBE_IN_FLIGHT_TTL','INCIDENT_FAILURE_THRESHOLD','INCIDENT_RECOVERY_THRESHOLD','COMPOSE_PROJECT_NAME',
+    'KEYCLOAK_PORT','OIDC_AUTOMATION_CLIENT_SECRET','DASHBOARD_PUBLIC_URL')) {
     $value = [Environment]::GetEnvironmentVariable($key)
     if ($null -ne $value) { $forwarded += "$key=$value" }
 }
@@ -47,7 +52,7 @@ function Invoke-Docker {
 }
 function Api {
     param([string]$Path, [string]$Method = 'Get', [object]$Body)
-    $arguments = @{ Uri = "$BackendUrl$Path"; Method = $Method; TimeoutSec = 15 }
+    $arguments = @{ Uri = "$BackendUrl$Path"; Method = $Method; Headers = $authorization; TimeoutSec = 15 }
     if ($null -ne $Body) { $arguments.ContentType = 'application/json'; $arguments.Body = $Body | ConvertTo-Json }
     Invoke-RestMethod @arguments
 }
@@ -74,7 +79,7 @@ function Queued {
     param([string]$Name)
     Poll "$Name async HTTP 202" {
         try {
-            $response = Invoke-WebRequest -UseBasicParsing -Method Post -Uri "$BackendUrl/api/services/$($ids[$Name])/check/async" -TimeoutSec 15
+            $response = Invoke-WebRequest -UseBasicParsing -Method Post -Uri "$BackendUrl/api/services/$($ids[$Name])/check/async" -Headers $authorization -TimeoutSec 15
             if ($response.StatusCode -ne 202) { throw 'Async endpoint did not return 202.' }
             $queued = $response.Content | ConvertFrom-Json
             if ($queued.status -ne 'QUEUED') { throw 'Invalid queued status.' }
@@ -109,7 +114,7 @@ function Assert-Isolation {
 
 Write-Host 'V0.6 actual Kafka lab validation.'
 $ids = @{}
-foreach ($service in @(& "$PSScriptRoot/register-demo-services.ps1" -BackendUrl $BackendUrl -Target Docker)) {
+foreach ($service in @(& "$PSScriptRoot/register-demo-services.ps1" -BackendUrl $BackendUrl -Target Docker -AccessToken $AccessToken)) {
     $ids[$service.Name] = $service.Id
     Control $service.Name 'normal'
     Control $service.Name 'recover'

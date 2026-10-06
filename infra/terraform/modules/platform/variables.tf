@@ -36,4 +36,19 @@ variable "otel_exporter_endpoint" {
   type    = string
   default = ""
 }
+variable "oidc_issuer_uri" { type = string }
+variable "oidc_jwk_set_uri" {
+  type    = string
+  default = ""
+}
+variable "oidc_audience" {
+  type    = string
+  default = "launchguard-api"
+}
+variable "oidc_roles_claim" {
+  type    = string
+  default = "roles"
+}
+variable "oidc_dashboard_client_id" { type = string }
+variable "oidc_connect_src" { type = string }
 

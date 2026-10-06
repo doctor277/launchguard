@@ -1,7 +1,8 @@
 [CmdletBinding()]
-param([string]$Root = (Split-Path -Parent $PSScriptRoot))
+param([string]$Root)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+if (-not $Root) { $Root = Split-Path -Parent $PSScriptRoot }
 $modules = @('monitoring-events','probe-worker','backend','demo-services/payment-service',
     'demo-services/order-service','demo-services/notification-service')
 $total = 0

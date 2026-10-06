@@ -4,6 +4,7 @@ param(
     [string]$PaymentUrl = 'http://localhost:8081',
     [ValidateRange(30,600)][int]$TimeoutSeconds = 180,
     [string]$WslDistribution,
+    [string]$AccessToken,
     [string]$EvidencePath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'target/delivery-evidence.json')
 )
 
@@ -11,11 +12,14 @@ param(
 # Existing registrations/data/volumes are preserved. Always recovers payment, including on assertion failure.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. "$PSScriptRoot/launchguard-auth.ps1"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $BackendUrl = $BackendUrl.TrimEnd('/')
+$AccessToken = Get-LaunchGuardAccessToken -AccessToken $AccessToken
+$authorization = New-LaunchGuardAuthorizationHeader -AccessToken $AccessToken
 function Api {
     param([string]$Path)
-    Invoke-RestMethod -Uri "$BackendUrl$Path" -TimeoutSec 15
+    Invoke-RestMethod -Uri "$BackendUrl$Path" -Headers $authorization -TimeoutSec 15
 }
 function Poll {
     param([string]$Description, [scriptblock]$Condition)
@@ -40,7 +44,7 @@ function Sql {
         ($output -join "`n").Trim()
     } finally { Pop-Location }
 }
-$registered = @(& "$PSScriptRoot/register-demo-services.ps1" -BackendUrl $BackendUrl -Target Docker)
+$registered = @(& "$PSScriptRoot/register-demo-services.ps1" -BackendUrl $BackendUrl -Target Docker -AccessToken $AccessToken)
 $payment = $registered | Where-Object { $_.Name -eq 'payment-service' } | Select-Object -First 1
 $serviceId = [guid]$payment.Id
 $deploymentPath = "/api/services/$serviceId/deployments"
@@ -53,7 +57,7 @@ $externalId = if ($env:GITHUB_RUN_ID) { "github-$env:GITHUB_REPOSITORY_ID-$env:G
     else { "local-$([guid]::NewGuid())" }
 $projectVersion = ([xml](Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'pom.xml'))).project.version
 $reportArgs = @{ LaunchGuardUrl=$BackendUrl; ServiceId=$serviceId; Version=$projectVersion; CommitSha=$sha
-    Environment='local'; ImageTag="sha-$sha"; ExternalId=$externalId; Description='V0.7 delivery demonstration' }
+    Environment='local'; ImageTag="sha-$sha"; ExternalId=$externalId; Description='V1.0 delivery demonstration'; AccessToken=$AccessToken }
 try {
     Invoke-RestMethod -Method Post -Uri "$PaymentUrl/admin/normal" -TimeoutSec 15 | Out-Null
     Invoke-RestMethod -Method Post -Uri "$PaymentUrl/admin/recover" -TimeoutSec 15 | Out-Null

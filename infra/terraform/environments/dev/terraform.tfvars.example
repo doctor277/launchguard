@@ -9,6 +9,14 @@ require_internet_egress = true # Required when probing public URLs; set false on
 enable_msk           = true
 image_tag            = "bootstrap" # Initial zero-count task definitions; GitHub deploys SHA-tagged revisions.
 
+# Generic OIDC configuration. The SPA client is public: do not configure a client secret here.
+oidc_issuer_uri          = "https://id.example.com/realms/launchguard"
+oidc_dashboard_client_id = "launchguard-dashboard"
+oidc_audience            = "launchguard-api"
+oidc_roles_claim         = "roles"
+oidc_connect_src         = "https://id.example.com"
+# oidc_jwk_set_uri = "https://id.example.com/realms/launchguard/protocol/openid-connect/certs"
+
 desired_counts = {
   backend              = 0
   dashboard            = 0

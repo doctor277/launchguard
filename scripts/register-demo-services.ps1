@@ -1,14 +1,18 @@
 [CmdletBinding()]
 param(
     [string]$BackendUrl = 'http://localhost:8080',
-    [ValidateSet('Docker', 'Local')][string]$Target = 'Docker'
+    [ValidateSet('Docker', 'Local')][string]$Target = 'Docker',
+    [string]$AccessToken
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. "$PSScriptRoot/launchguard-auth.ps1"
 $BackendUrl = $BackendUrl.TrimEnd('/')
+$AccessToken = Get-LaunchGuardAccessToken -AccessToken $AccessToken
+$authorization = New-LaunchGuardAuthorizationHeader -AccessToken $AccessToken
 # Assign first so PowerShell 5.1 enumerates JSON arrays correctly, including [].
-$existing = Invoke-RestMethod -Uri "$BackendUrl/api/services" -TimeoutSec 15
+$existing = Invoke-RestMethod -Uri "$BackendUrl/api/services" -Headers $authorization -TimeoutSec 15
 
 foreach ($demo in @(
     @{ Name = 'payment-service'; Port = 8081 },
@@ -24,11 +28,11 @@ foreach ($demo in @(
     } else {
         $body = @{ name = $demo.Name; baseUrl = $baseUrl; healthPath = '/health' } | ConvertTo-Json
         try {
-            $service = Invoke-RestMethod -Method Post -Uri "$BackendUrl/api/services" -ContentType 'application/json' -Body $body -TimeoutSec 15
+            $service = Invoke-RestMethod -Method Post -Uri "$BackendUrl/api/services" -Headers $authorization -ContentType 'application/json' -Body $body -TimeoutSec 15
         } catch {
             # Another bootstrap may have registered this name concurrently.
             if ($null -eq $_.Exception.Response -or [int]$_.Exception.Response.StatusCode -ne 409) { throw }
-            $fresh = Invoke-RestMethod -Uri "$BackendUrl/api/services" -TimeoutSec 15
+            $fresh = Invoke-RestMethod -Uri "$BackendUrl/api/services" -Headers $authorization -TimeoutSec 15
             $service = $fresh | Where-Object { $_.name -eq $demo.Name } | Select-Object -First 1
             if ($null -eq $service) { throw }
         }

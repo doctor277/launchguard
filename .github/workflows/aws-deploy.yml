@@ -102,9 +102,14 @@ jobs:
         env:
           LAUNCHGUARD_URL: ${{ vars.LAUNCHGUARD_AWS_URL }}
           LAUNCHGUARD_SERVICE_ID: ${{ vars.LAUNCHGUARD_SERVICE_ID }}
+          OIDC_TOKEN_ENDPOINT: ${{ vars.OIDC_AUTOMATION_TOKEN_ENDPOINT }}
+          OIDC_AUTOMATION_CLIENT_ID: ${{ vars.OIDC_AUTOMATION_CLIENT_ID }}
+          OIDC_AUTOMATION_CLIENT_SECRET: ${{ secrets.OIDC_AUTOMATION_CLIENT_SECRET }}
         run: |
-          if (-not $env:LAUNCHGUARD_URL -or -not $env:LAUNCHGUARD_SERVICE_ID) {
-            Write-Host 'SKIPPED deployment reporting: LAUNCHGUARD_AWS_URL or LAUNCHGUARD_SERVICE_ID is unset.'
+          if (-not $env:LAUNCHGUARD_URL -or -not $env:LAUNCHGUARD_SERVICE_ID -or
+              -not $env:OIDC_TOKEN_ENDPOINT -or -not $env:OIDC_AUTOMATION_CLIENT_ID -or
+              -not $env:OIDC_AUTOMATION_CLIENT_SECRET) {
+            Write-Host 'SKIPPED deployment reporting: LaunchGuard or OIDC automation configuration is incomplete.'
             exit 0
           }
           ./scripts/report-deployment.ps1 -LaunchGuardUrl $env:LAUNCHGUARD_URL `

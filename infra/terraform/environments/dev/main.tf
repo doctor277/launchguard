@@ -75,6 +75,12 @@ module "platform" {
   msk_cluster_uuid                  = module.messaging.cluster_uuid
   certificate_arn                   = var.certificate_arn
   otel_exporter_endpoint            = var.otel_exporter_endpoint
+  oidc_issuer_uri                   = var.oidc_issuer_uri
+  oidc_jwk_set_uri                  = var.oidc_jwk_set_uri
+  oidc_audience                     = var.oidc_audience
+  oidc_roles_claim                  = var.oidc_roles_claim
+  oidc_dashboard_client_id          = var.oidc_dashboard_client_id
+  oidc_connect_src                  = var.oidc_connect_src
 }
 
 module "github_oidc" {
@@ -116,6 +122,16 @@ resource "terraform_data" "deployment_guardrails" {
     precondition {
       condition     = !var.enable_github_oidc || var.create_github_oidc_provider || trimspace(var.existing_github_oidc_provider_arn) != ""
       error_message = "Enable GitHub OIDC by creating the provider or supplying an existing provider ARN."
+    }
+    precondition {
+      condition = var.desired_counts["backend"] + var.desired_counts["dashboard"] == 0 || (
+        trimspace(var.oidc_issuer_uri) != "" && trimspace(var.oidc_dashboard_client_id) != "" && trimspace(var.oidc_connect_src) != ""
+      )
+      error_message = "Running backend or dashboard tasks requires oidc_issuer_uri, oidc_dashboard_client_id, and oidc_connect_src."
+    }
+    precondition {
+      condition     = var.desired_counts["backend"] + var.desired_counts["dashboard"] == 0 || try(trimspace(var.certificate_arn), "") != ""
+      error_message = "Running authenticated backend or dashboard tasks requires certificate_arn so browser and API traffic use HTTPS."
     }
   }
 }

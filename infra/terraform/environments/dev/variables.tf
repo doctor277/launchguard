@@ -11,7 +11,7 @@ variable "vpc_cidr" {
   default = "10.42.0.0/16"
 }
 variable "allowed_ingress_cidrs" {
-  description = "Explicit client CIDRs allowed to reach the otherwise closed public ALB. The application has no authentication."
+  description = "Explicit client CIDRs allowed to reach the public ALB; authentication is still required for application APIs."
   type        = list(string)
   default     = []
 }
@@ -59,6 +59,34 @@ variable "certificate_arn" {
 variable "otel_exporter_endpoint" {
   type    = string
   default = ""
+}
+variable "oidc_issuer_uri" {
+  description = "Public standards-compliant OIDC issuer used by browsers and for JWT issuer validation."
+  type        = string
+  default     = ""
+}
+variable "oidc_jwk_set_uri" {
+  description = "Optional backend-reachable JWK Set URI. Leave empty when issuer discovery is reachable from the backend."
+  type        = string
+  default     = ""
+}
+variable "oidc_audience" {
+  type    = string
+  default = "launchguard-api"
+}
+variable "oidc_roles_claim" {
+  type    = string
+  default = "roles"
+}
+variable "oidc_dashboard_client_id" {
+  description = "Public SPA client ID; this is not a secret."
+  type        = string
+  default     = ""
+}
+variable "oidc_connect_src" {
+  description = "OIDC origin allowed by the dashboard Content Security Policy, for example https://id.example.com."
+  type        = string
+  default     = ""
 }
 variable "database_name" {
   type    = string

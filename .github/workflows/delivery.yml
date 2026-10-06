@@ -58,12 +58,17 @@ jobs:
           LAUNCHGUARD_URL: ${{ vars.LAUNCHGUARD_URL }}
           LAUNCHGUARD_SERVICE_ID: ${{ vars.LAUNCHGUARD_SERVICE_ID }}
           LAUNCHGUARD_ENVIRONMENT: ${{ vars.LAUNCHGUARD_ENVIRONMENT }}
+          OIDC_TOKEN_ENDPOINT: ${{ vars.OIDC_AUTOMATION_TOKEN_ENDPOINT }}
+          OIDC_AUTOMATION_CLIENT_ID: ${{ vars.OIDC_AUTOMATION_CLIENT_ID }}
+          OIDC_AUTOMATION_CLIENT_SECRET: ${{ secrets.OIDC_AUTOMATION_CLIENT_SECRET }}
         run: |
           if (-not $env:LAUNCHGUARD_URL) {
             Write-Host 'SKIPPED external reporting: LAUNCHGUARD_URL is unset. Runner-local demonstration completed.'
           } else {
-            if (-not $env:LAUNCHGUARD_SERVICE_ID -or -not $env:LAUNCHGUARD_ENVIRONMENT) {
-              throw 'External reporting also requires LAUNCHGUARD_SERVICE_ID and LAUNCHGUARD_ENVIRONMENT.'
+            if (-not $env:LAUNCHGUARD_SERVICE_ID -or -not $env:LAUNCHGUARD_ENVIRONMENT -or
+                -not $env:OIDC_TOKEN_ENDPOINT -or -not $env:OIDC_AUTOMATION_CLIENT_ID -or
+                -not $env:OIDC_AUTOMATION_CLIENT_SECRET) {
+              throw 'External reporting requires service/environment and OIDC automation configuration.'
             }
             ./scripts/report-deployment.ps1 -LaunchGuardUrl $env:LAUNCHGUARD_URL -ServiceId $env:LAUNCHGUARD_SERVICE_ID `
               -Version $env:APP_VERSION -CommitSha $env:GIT_SHA -Environment $env:LAUNCHGUARD_ENVIRONMENT `
