@@ -4,14 +4,71 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      maven-routine:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+      maven-major:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - major
+      maven-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
   - package-ecosystem: npm
     directory: /dashboard
     schedule:
       interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      npm-routine:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+      npm-major:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - major
+      npm-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      actions-routine:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+      actions-major:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - major
+      actions-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
   - package-ecosystem: docker
     directories:
       - /backend
@@ -22,7 +79,45 @@ updates:
       - /demo-services/notification-service
     schedule:
       interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      docker-routine:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+      docker-major:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - major
+      docker-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
   - package-ecosystem: terraform
     directory: /infra/terraform/environments/dev
     schedule:
       interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      terraform-routine:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+      terraform-major:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - major
+      terraform-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
